@@ -234,6 +234,12 @@ const Mock = {
     return { groups };
   },
   async 'groups/sync'() { await sleep(300); return { groups: [] }; },
+  async 'groups/list'() {
+    await sleep(700);
+    const mk = (i, name, size, ad) => ({ id: '1203630000000000' + i + '@g.us', name, size, description: 'Grupo antigo da conta', adminsOnly: ad, createdAt: Date.now() - 864e5 * (60 - i * 3) });
+    return { groups: [mk(1, 'Promoções 1', 600, true), mk(2, 'Promoções 2', 598, true), mk(3, 'Promoções 3', 311, true), mk(4, 'Promoções 10', 42, false), mk(5, 'Equipe interna', 8, false), mk(6, 'Clientes VIP', 150, true)] };
+  },
+  async 'groups/import'({ groupIds }) { await sleep(600); return { links: (groupIds || []).map((id, i) => ({ id, inviteLink: i % 4 === 3 ? '' : 'https://chat.whatsapp.com/' + randomCode() })) }; },
   async 'state/load'() { return { state: null }; },
   async 'state/save'() { return { ok: true }; },
   async 'campaigns/sync'() { return { ok: true, groups: [] }; },
@@ -536,6 +542,7 @@ function viewCampanha(id) {
   if (!c) { v.innerHTML = emptyState('layers', 'Campanha não encontrada', 'Ela pode ter sido excluída.', '<a class="btn primary" href="#/campanhas">Voltar para campanhas</a>'); return; }
   $('#page-title').textContent = c.name;
   $('#page-actions').innerHTML = `<button class="btn" type="button" data-act="campaign-action" data-id="${c.id}">${icon('zap')} Nova ação</button>
+    <button class="btn" type="button" data-act="import-open" data-id="${c.id}">${icon('layers')} Importar grupos</button>
     <button class="btn primary" type="button" data-act="groups-open" data-id="${c.id}">${icon('plus')} Criar grupos</button>`;
   const gi = groupInfo(c); const total = c.groups.reduce((s, g) => s + g.members, 0);
   const base = (state.settings.baseUrl || 'https://seu-n8n.com/webhook').replace(/\/+$/, '');
@@ -557,7 +564,7 @@ function viewCampanha(id) {
       <div class="queue-wrap">${queueHtml(c, false)}</div></div>
     ${c.groups.length ? `<div class="list" style="margin-bottom:18px"><div class="list-head row-groups"><span>Grupo</span><span>Capacidade</span><span>Situação</span><span>Mensagens</span><span></span></div>
       ${gi.rows.map(({ g, st }) => `<div class="list-row row-groups">
-        <div class="cell-main"><b>${esc(g.name)}</b><span class="trunc">${esc(g.description || 'Sem descrição')}</span></div>
+        <div class="cell-main"><b>${esc(g.name)}</b><span class="trunc">${g.inviteLink ? '' : '<b style="color:var(--danger)">Sem link de convite.</b> '}${esc(g.description || 'Sem descrição')}</span></div>
         <div><span>${fmtInt(g.members)} de ${GROUP_LIMIT}</span><div class="progress"><i style="width:${Math.min(100, (g.members / GROUP_LIMIT) * 100)}%"></i></div></div>
         <div><span class="pill ${st === 'ativo' ? 'ok' : st === 'reserva' ? 'info' : 'dark'}">${st === 'ativo' ? 'Recebendo' : st === 'reserva' ? 'Reserva' : 'Lotado'}</span></div>
         <div><span class="pill ${g.adminsOnly ? 'warn' : 'off'}">${g.adminsOnly ? 'Só admins' : 'Todos'}</span></div>
@@ -611,6 +618,59 @@ function openGroupsModal(campId) {
       };
       $('#g-base').addEventListener('input', upd); $('#g-qty').addEventListener('input', upd); upd();
     },
+  });
+}
+/* importar grupos que já existem na conta */
+let imp = null;
+const naturalCmp = (a, b) => String(a).localeCompare(String(b), 'pt-BR', { numeric: true, sensitivity: 'base' });
+const groupsInCampaigns = () => { const m = {}; state.campaigns.forEach((c) => c.groups.forEach((g) => { m[g.id] = c.name; })); return m; };
+function importSorted() {
+  const list = (imp.groups || []).slice();
+  if (imp.order === 'created') list.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  else if (imp.order === 'size') list.sort((a, b) => b.size - a.size);
+  else list.sort((a, b) => naturalCmp(a.name, b.name));
+  return list;
+}
+function importVisible() {
+  const q = imp.filter.trim().toLowerCase();
+  return importSorted().filter((g) => !q || g.name.toLowerCase().includes(q));
+}
+function renderImportList() {
+  const box = $('#imp-body'); if (!box || !imp) return;
+  if (!imp.groups) { box.innerHTML = '<p class="muted">Escolha a conta e clique em Buscar grupos.</p>'; $('#imp-submit').disabled = true; return; }
+  const used = groupsInCampaigns(); const vis = importVisible();
+  const free = vis.filter((g) => !used[g.id]);
+  const nSel = Array.from(imp.sel).filter((id) => !used[id]).length;
+  box.innerHTML = `<div class="imp-tools">
+      <input id="imp-filter" type="search" placeholder="Filtrar por nome" value="${esc(imp.filter)}">
+      <select id="imp-order"><option value="name" ${imp.order === 'name' ? 'selected' : ''}>Ordem: nome (1, 2, 10)</option><option value="created" ${imp.order === 'created' ? 'selected' : ''}>Ordem: mais antigos primeiro</option><option value="size" ${imp.order === 'size' ? 'selected' : ''}>Ordem: mais cheios primeiro</option></select>
+      <button class="btn sm" type="button" data-act="import-all">${free.length && free.every((g) => imp.sel.has(g.id)) ? 'Desmarcar visíveis' : 'Marcar visíveis'}</button></div>
+    <p class="muted" style="margin:0 0 8px">${imp.groups.length} grupo(s) na conta${vis.length !== imp.groups.length ? `, ${vis.length} no filtro` : ''}. Eles entram na campanha na ordem mostrada abaixo, numerados a partir do próximo número da fila.</p>
+    <div class="imp-list">${vis.length ? vis.map((g) => `<label class="imp-row ${used[g.id] ? 'off' : ''}">
+        <input type="checkbox" data-id="${esc(g.id)}" ${imp.sel.has(g.id) && !used[g.id] ? 'checked' : ''} ${used[g.id] ? 'disabled' : ''}>
+        <span class="imp-name"><b>${esc(g.name)}</b><small>${used[g.id] ? 'Já está na campanha ' + esc(used[g.id]) : esc(g.description || 'Sem descrição')}</small></span>
+        <span class="imp-size ${g.size >= GROUP_LIMIT ? 'full' : ''}">${fmtInt(g.size)}/${GROUP_LIMIT}</span>
+        <span class="imp-tag">${g.adminsOnly ? 'só admins' : 'todos enviam'}</span></label>`).join('') : '<p class="muted" style="padding:14px">Nenhum grupo encontrado.</p>'}</div>`;
+  const sub = $('#imp-submit'); sub.disabled = !nSel; sub.textContent = nSel ? `Importar ${nSel} grupo${nSel > 1 ? 's' : ''}` : 'Importar grupos';
+  $('#imp-filter').addEventListener('input', (e) => { imp.filter = e.target.value; const pos = e.target.selectionStart; renderImportList(); const f = $('#imp-filter'); f.focus(); try { f.setSelectionRange(pos, pos); } catch (er) { /* ok */ } });
+  $('#imp-order').addEventListener('change', (e) => { imp.order = e.target.value; renderImportList(); });
+  $$('#imp-body .imp-row input').forEach((cb) => cb.addEventListener('change', () => { if (cb.checked) imp.sel.add(cb.dataset.id); else imp.sel.delete(cb.dataset.id); renderImportList(); }));
+}
+function openImportModal(campId) {
+  const c = getCampaign(campId); if (!c) return;
+  const accs = state.accounts.filter((a) => a.status === 'connected');
+  if (!accs.length) return toast('Conecte uma conta primeiro, em Contas.', 'error');
+  imp = { campId, accountId: c.accountId && accs.some((a) => a.id === c.accountId) ? c.accountId : accs[0].id, groups: null, sel: new Set(), filter: '', order: 'name' };
+  openModal({
+    title: 'Importar grupos existentes', size: 'lg',
+    body: `<p class="lead">Busca os grupos que a conta já tem no WhatsApp e adiciona os escolhidos à campanha <b>${esc(c.name)}</b>.</p>
+      <div class="row" style="align-items:end"><label class="field"><span>Conta</span><select id="imp-account">${accs.map((a) => `<option value="${a.id}" ${a.id === imp.accountId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
+      <div class="field"><button class="btn primary" type="button" data-act="import-search">${icon('refresh')} Buscar grupos</button></div></div>
+      <div id="imp-body"></div>
+      <p class="muted" style="margin-top:10px">O link de convite só pode ser lido nos grupos em que a conta é administradora. Nos demais, o grupo entra sem link e o link inteligente não o usa.</p>`,
+    footer: `<button class="btn" type="button" data-act="modal-close">Cancelar</button><button class="btn primary" type="button" id="imp-submit" data-act="import-submit" disabled>Importar grupos</button>`,
+    onMount: () => { renderImportList(); },
+    onClose: () => { imp = null; },
   });
 }
 /* envia a campanha ao n8n (link inteligente) e traz de volta a contagem de participantes */
@@ -1061,6 +1121,8 @@ function handleFile(input) {
    ===================================================================== */
 const API_DOCS = [
   { path: 'ping', desc: 'Testa a conexão e a senha. Devolve o cliente a quem a senha pertence; as contas dele começam com o prefixo.', req: {}, res: { ok: true, client: { id: 'bruno', name: 'Bruno', prefix: 'bruno-' } } },
+  { path: 'groups/list', desc: 'Lista os grupos que já existem na conta (tamanho, descrição, só admins, data de criação).', req: { instance: 'clush-atendimento' }, res: { groups: [{ id: '1203...@g.us', name: 'Promoções 1', size: 412, description: '...', adminsOnly: true, createdAt: 1700000000000 }] } },
+  { path: 'groups/import', desc: 'Lê o link de convite dos grupos escolhidos. Link vazio quando a conta não é administradora.', req: { instance: 'clush-atendimento', groupIds: ['1203...@g.us'] }, res: { links: [{ id: '1203...@g.us', inviteLink: 'https://chat.whatsapp.com/...' }] } },
   { path: 'state/load', desc: 'Devolve os dados do painel (contas, campanhas, ações) guardados para o cliente.', req: {}, res: { state: { accounts: [], campaigns: [], actions: [] }, updatedAt: 1700000000000 } },
   { path: 'state/save', desc: 'Guarda os dados do painel do cliente (limite de 2 MB).', req: { state: { accounts: [], campaigns: [], actions: [] } }, res: { ok: true } },
   { path: 'accounts/connect', desc: 'Cria a instância (se não existir) e devolve o QR Code.', req: { instance: 'clush-atendimento', name: 'Atendimento Clush' }, res: { qr: 'data:image/png;base64,...' } },
@@ -1173,6 +1235,42 @@ A['campaign-delete'] = async (el) => {
 };
 A['campaign-action'] = (el) => { wiz = newWiz(el.dataset.id); location.hash = '#/acoes/nova'; };
 A['groups-open'] = (el) => openGroupsModal(el.dataset.id);
+A['import-open'] = (el) => openImportModal(el.dataset.id);
+A['import-search'] = async (btn) => {
+  if (!imp) return;
+  const acc = getAccount($('#imp-account').value); if (!acc) return toast('Escolha uma conta', 'error');
+  imp.accountId = acc.id; setBusy(btn, true);
+  try { const res = await API.call('groups/list', { instance: acc.instance }); imp.groups = res.groups || []; imp.sel = new Set(); renderImportList(); }
+  catch (e) { toast(e.message, 'error'); } finally { setBusy(btn, false); }
+};
+A['import-all'] = () => {
+  if (!imp) return; const used = groupsInCampaigns();
+  const free = importVisible().filter((g) => !used[g.id]);
+  const all = free.length && free.every((g) => imp.sel.has(g.id));
+  free.forEach((g) => { if (all) imp.sel.delete(g.id); else imp.sel.add(g.id); });
+  renderImportList();
+};
+A['import-submit'] = async (btn) => {
+  if (!imp || !imp.groups) return;
+  const c = getCampaign(imp.campId); const acc = getAccount(imp.accountId); if (!c || !acc) return;
+  const used = groupsInCampaigns();
+  const chosen = importSorted().filter((g) => imp.sel.has(g.id) && !used[g.id]);
+  if (!chosen.length) return toast('Escolha pelo menos um grupo', 'error');
+  setBusy(btn, true);
+  try {
+    const res = await API.call('groups/import', { instance: acc.instance, groupIds: chosen.map((g) => g.id) });
+    const links = {}; (res.links || []).forEach((l) => { links[l.id] = l.inviteLink || ''; });
+    let n = c.groups.length ? Math.max(...c.groups.map((g) => g.n)) : 0; let noLink = 0;
+    chosen.forEach((g) => {
+      n += 1; const link = links[g.id] || ''; if (!link) noLink += 1;
+      c.groups.push({ id: g.id, n, name: g.name, members: g.size, adminsOnly: g.adminsOnly, description: g.description, inviteLink: link, accountId: acc.id, imported: true });
+    });
+    if (!c.accountId) c.accountId = acc.id;
+    saveState(); closeModal(); route();
+    toast(`${chosen.length} grupo(s) importado(s)${noLink ? `. ${noLink} sem link de convite (a conta não é admin deles)` : ''}`, noLink ? 'info' : 'success');
+    syncCampaign(c).catch(() => toast('Grupos importados, mas o link inteligente não foi atualizado. Abra a campanha de novo para tentar outra vez.', 'error'));
+  } catch (e) { toast(e.message, 'error'); setBusy(btn, false); }
+};
 A['groups-submit'] = async (btn) => {
   const c = getCampaign(btn.dataset.id); if (!c) return;
   const base = $('#g-base').value.trim(); const qty = Number($('#g-qty').value) || 0; const minQty = c.groups.length ? 1 : 2;
