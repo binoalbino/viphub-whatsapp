@@ -595,6 +595,7 @@ function openGroupsModal(campId) {
       </div>
       <p class="muted" id="g-preview" style="margin:-4px 0 14px"></p>
       <label class="field"><span>Descrição dos grupos</span><textarea id="g-desc" placeholder="Texto que aparece na descrição do grupo">${esc(cfg.description || '')}</textarea></label>
+      <label class="field"><span>Seu número (entra em todos os grupos)</span><input id="g-participants" type="text" inputmode="tel" value="${esc(cfg.participants || ((state.campaigns.find((x) => x.groupCfg && x.groupCfg.participants) || { groupCfg: {} }).groupCfg.participants) || '')}" placeholder="(47) 99999-0000"><small>O WhatsApp não cria grupo sem outra pessoa. Use um número seu, diferente do que está conectado. Mais de um: um por linha, separados por vírgula.</small></label>
       <div class="switch-row"><div><b>Apenas admins podem enviar mensagens</b><small>Mantém o grupo como canal de avisos.</small></div>
         <label class="switch"><input id="g-admins" type="checkbox" ${cfg.adminsOnly === false ? '' : 'checked'}><span class="slider"></span></label></div>
       <div class="row" style="margin-top:10px">
@@ -1049,7 +1050,7 @@ const API_DOCS = [
   { path: 'accounts/status', desc: 'Consulta o estado da conexão. O painel consulta a cada 3 segundos.', req: { instance: 'clush-atendimento' }, res: { state: 'open', number: '5547999999999' } },
   { path: 'accounts/logout', desc: 'Desconecta o número (mantém a instância).', req: { instance: 'clush-atendimento' }, res: { ok: true } },
   { path: 'accounts/delete', desc: 'Remove a instância.', req: { instance: 'clush-atendimento' }, res: { ok: true } },
-  { path: 'groups/create', desc: 'Cria os grupos, aplica descrição, só admins e imagem, e devolve os links.', req: { instance: 'clush-atendimento', campaignId: 'camp_x', base: 'Bruno VIP', startAt: 1, quantity: 2, adminsOnly: true, description: '...', limit: 600, image: { name: 'logo.png', type: 'image/png', base64: '...' } }, res: { groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1', inviteLink: 'https://chat.whatsapp.com/...' }] } },
+  { path: 'groups/create', desc: 'Cria os grupos, aplica descrição, só admins e imagem, e devolve os links.', req: { instance: 'clush-atendimento', campaignId: 'camp_x', base: 'Bruno VIP', startAt: 1, quantity: 2, participants: ['5547999990000'], adminsOnly: true, description: '...', limit: 600, image: { name: 'logo.png', type: 'image/png', base64: '...' } }, res: { groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1', inviteLink: 'https://chat.whatsapp.com/...' }] } },
   { path: 'campaigns/sync', desc: 'Envia a campanha e seus grupos para o link inteligente. Devolve a contagem atual de participantes. Com force=true o n8n aceita as contagens enviadas.', req: { slug: 'bruno-vip-123', name: 'Bruno VIP', limit: 600, force: false, groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1', members: 412, inviteLink: 'https://chat.whatsapp.com/...', instance: 'clush-atendimento' }] }, res: { ok: true, groups: [{ id: '1203...@g.us', members: 412 }] } },
   { path: 'campaigns/delete', desc: 'Remove a campanha do link inteligente.', req: { slug: 'bruno-vip-123' }, res: { ok: true } },
   { path: 'groups/sync', desc: 'Conta os participantes de cada grupo (botão "Atualizar participantes" na campanha).', req: { instance: 'clush-atendimento', groupIds: ['1203...@g.us'] }, res: { groups: [{ id: '1203...@g.us', members: 412 }] } },
@@ -1162,15 +1163,18 @@ A['groups-submit'] = async (btn) => {
   if (qty < minQty || qty > 50) return toast(c.groups.length ? 'Informe entre 1 e 50 grupos' : 'Crie ao menos 2 grupos para ter um reserva', 'error');
   const accountId = $('#g-account').value; const acc = getAccount(accountId);
   const adminsOnly = $('#g-admins').checked; const description = $('#g-desc').value.trim();
+  const partText = $('#g-participants').value.trim(); const parts = parseNumbers(partText);
+  if (state.settings.mode === 'n8n' && !parts.valid.length) return toast('Informe pelo menos um número seu com DDD para entrar nos grupos', 'error');
+  if (parts.invalid.length) return toast(`${parts.invalid.length} número(s) inválido(s) em "Seu número". Use DDD + número.`, 'error');
   const startAt = c.groups.length ? Math.max(...c.groups.map((g) => g.n)) + 1 : 1;
   const imgFile = $('#g-image').files && $('#g-image').files[0];
   setBusy(btn, true);
   try {
-    const payload = { instance: acc.instance, campaignId: c.id, base, startAt, quantity: qty, adminsOnly, description, limit: GROUP_LIMIT };
+    const payload = { instance: acc.instance, campaignId: c.id, base, startAt, quantity: qty, adminsOnly, description, participants: parts.valid, limit: GROUP_LIMIT };
     if (imgFile && state.settings.mode === 'n8n') payload.image = { name: imgFile.name, type: imgFile.type, base64: await fileToBase64(imgFile) };
     const res = await API.call('groups/create', payload);
     (res.groups || []).forEach((g) => c.groups.push({ id: g.id, n: g.n, name: g.name, members: 0, adminsOnly, description, inviteLink: g.inviteLink, accountId }));
-    c.groupCfg = { base, adminsOnly, description }; if (!c.accountId) c.accountId = accountId;
+    c.groupCfg = { base, adminsOnly, description, participants: partText }; if (!c.accountId) c.accountId = accountId;
     saveState(); closeModal(); toast(`${(res.groups || []).length} grupos criados`, 'success'); route();
     syncCampaign(c).catch(() => toast('Grupos criados, mas o link inteligente não foi atualizado. Abra a campanha de novo para tentar outra vez.', 'error'));
   } catch (e) { toast(e.message, 'error'); setBusy(btn, false); }
