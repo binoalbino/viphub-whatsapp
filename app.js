@@ -734,13 +734,30 @@ function checkScheduled() {
   state.actions.forEach((a) => { if (a.status === 'agendada' && a.scheduledAt && a.scheduledAt <= Date.now()) { a.status = 'em andamento'; startSim(a.id); changed = true; } });
   if (changed) { saveState(); refreshIfRoute('acoes'); }
 }
+let lastSchedPoll = 0;
 async function pollRemote() {
   if (state.settings.mode !== 'n8n') return;
-  const ids = state.actions.filter((a) => ['agendada', 'em andamento'].includes(a.status)).map((a) => a.id);
+  /* ações em andamento: a cada 5 s. Agendadas: só a cada 60 s, para não encher o histórico de execuções do n8n */
+  const running = state.actions.filter((a) => a.status === 'em andamento').map((a) => a.id);
+  const sched = state.actions.filter((a) => a.status === 'agendada').map((a) => a.id);
+  const now = Date.now();
+  const askSched = sched.length && now - lastSchedPoll >= 60000;
+  if (askSched) lastSchedPoll = now;
+  const ids = running.concat(askSched ? sched : []);
   if (!ids.length) return;
   try {
     const r = await API.call('actions/status', { ids });
-    (r.actions || []).forEach((u) => { const a = getAction(u.id); if (a) applyRemoteUpdate(a, u); });
+    const seen = new Set((r.actions || []).map((u) => u.id));
+    (r.actions || []).forEach((u) => { const a = getAction(u.id); if (a) { a.misses = 0; applyRemoteUpdate(a, u); } });
+    /* ação que o n8n não conhece (criada em modo demonstração, ou perdida): depois de 3 consultas sem resposta, para de perguntar */
+    ids.filter((id) => !seen.has(id)).forEach((id) => {
+      const a = getAction(id); if (!a) return;
+      a.misses = (a.misses || 0) + 1;
+      if (a.misses >= 3) {
+        a.status = 'falhou'; a.log = (a.log || []).concat([{ t: Date.now(), text: 'O n8n não encontrou esta ação. Ela pode ter sido criada em modo demonstração ou o envio não chegou a ser registrado.' }]);
+        toast('Uma ação não foi encontrada no n8n e foi marcada como falha.', 'error');
+      }
+    });
     saveState(); refreshIfRoute('acoes'); refreshActionModal();
   } catch (e) { /* tenta no próximo ciclo */ }
 }
