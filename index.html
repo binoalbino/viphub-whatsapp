@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VIP Hub | Grupos e disparos de WhatsApp</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <span class="brand-mark">V</span>
+        <span class="brand-name">VIP Hub</span>
+      </div>
+      <nav class="nav" aria-label="Menu principal">
+        <a href="#/contas" data-nav="contas"><i data-icon="smartphone"></i><span>Contas</span></a>
+        <a href="#/campanhas" data-nav="campanhas"><i data-icon="layers"></i><span>Campanhas</span></a>
+        <a href="#/acoes" data-nav="acoes"><i data-icon="zap"></i><span>Ações</span></a>
+        <a href="#/config" data-nav="config"><i data-icon="sliders"></i><span>Configurações</span></a>
+      </nav>
+      <div class="side-foot">
+        <div class="mode-badge" id="mode-badge"></div>
+        <button class="side-btn" data-act="toggle-theme" type="button"><i data-icon="moon"></i><span>Alternar tema</span></button>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" data-act="toggle-nav" type="button" aria-label="Abrir menu"><i data-icon="menu"></i></button>
+        <h1 id="page-title">Contas</h1>
+        <div id="page-actions"></div>
+      </header>
+      <main id="view"></main>
+    </div>
+  </div>
+
+  <div id="modal-root"></div>
+  <div id="toast-root" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
