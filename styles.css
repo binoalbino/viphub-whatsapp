@@ -482,3 +482,19 @@ pre.code { background: var(--side); color: #d3e3ec; padding: 14px; border-radius
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* importar grupos existentes */
+.imp-tools { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.imp-tools input[type=search] { flex: 1 1 180px; min-width: 0; }
+.imp-list { border: 1px solid var(--line); border-radius: var(--r-md, 10px); max-height: 340px; overflow-y: auto; }
+.imp-row { display: grid; grid-template-columns: auto 1fr auto auto; gap: 12px; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.imp-row:last-child { border-bottom: 0; }
+.imp-row:hover { background: var(--surface-2); }
+.imp-row.off { opacity: .55; cursor: not-allowed; }
+.imp-name { display: flex; flex-direction: column; min-width: 0; }
+.imp-name b, .imp-name small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.imp-name small { color: var(--muted); }
+.imp-size { font-variant-numeric: tabular-nums; font-weight: 600; }
+.imp-size.full { color: var(--danger); }
+.imp-tag { font-size: 12px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
+@media (max-width: 560px) { .imp-row { grid-template-columns: auto 1fr auto; } .imp-tag { display: none; } }
