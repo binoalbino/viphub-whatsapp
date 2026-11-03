@@ -105,7 +105,7 @@ const icon = (n, cls = '') => `<svg class="ico ${cls}" viewBox="0 0 24 24" fill=
 /* ---------- state ---------- */
 const defaultState = () => ({
   accounts: [], campaigns: [], actions: [],
-  settings: { mode: 'demo', baseUrl: '', token: '', theme: 'light' },
+  settings: { mode: 'demo', baseUrl: '', token: '', theme: 'light', client: null },
 });
 function loadState() {
   try {
@@ -118,7 +118,42 @@ function loadState() {
   return defaultState();
 }
 let state = loadState();
-function saveState() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* sem espaço */ } }
+function saveState() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* sem espaço */ }
+  scheduleRemoteSave();
+}
+/* No modo n8n os dados ficam guardados no servidor, separados por cliente. O navegador mantém só uma cópia. */
+const remote = { ready: false, timer: null, failed: false };
+function remotePayload() { return { accounts: state.accounts, campaigns: state.campaigns, actions: state.actions }; }
+function scheduleRemoteSave() {
+  if (state.settings.mode !== 'n8n' || !remote.ready) return;
+  clearTimeout(remote.timer);
+  remote.timer = setTimeout(pushRemoteState, 1500);
+}
+async function pushRemoteState() {
+  if (state.settings.mode !== 'n8n' || !remote.ready) return;
+  try { await API.call('state/save', { state: remotePayload() }); remote.failed = false; }
+  catch (e) { if (!remote.failed) toast('Não consegui salvar seus dados no servidor: ' + e.message, 'error'); remote.failed = true; }
+}
+/* Descobre quem é o cliente (ping) e traz os dados dele. Servidor manda; se ele estiver vazio, sobe o que há neste navegador. */
+async function connectRemote({ quiet = false } = {}) {
+  remote.ready = false;
+  if (state.settings.mode !== 'n8n') return false;
+  const ping = await API.call('ping', {});
+  state.settings.client = ping.client || null;
+  const r = await API.call('state/load', {});
+  if (r.state && typeof r.state === 'object') {
+    state.accounts = r.state.accounts || []; state.campaigns = r.state.campaigns || []; state.actions = r.state.actions || [];
+  }
+  remote.ready = true; remote.failed = false;
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* ok */ }
+  if (!r.state && (state.accounts.length || state.campaigns.length || state.actions.length)) await pushRemoteState();
+  updateModeBadge();
+  if (!quiet) route();
+  return true;
+}
+const instancePrefix = () => (state.settings.mode === 'n8n' && state.settings.client && state.settings.client.prefix) || '';
+const withPrefix = (inst) => { const pf = instancePrefix(); return pf && inst && !inst.startsWith(pf) ? pf + inst : inst; };
 const getAccount = (id) => state.accounts.find((a) => a.id === id);
 const getCampaign = (id) => state.campaigns.find((c) => c.id === id);
 const getAction = (id) => state.actions.find((a) => a.id === id);
@@ -199,6 +234,10 @@ const Mock = {
     return { groups };
   },
   async 'groups/sync'() { await sleep(300); return { groups: [] }; },
+  async 'state/load'() { return { state: null }; },
+  async 'state/save'() { return { ok: true }; },
+  async 'campaigns/sync'() { return { ok: true, groups: [] }; },
+  async 'campaigns/delete'() { return { ok: true }; },
   async 'actions/run'({ action }) { await sleep(600); return { id: action.id, status: action.scheduledAt ? 'agendada' : 'em andamento' }; },
   async 'actions/status'() { return { actions: [] }; },
   async 'actions/cancel'() { await sleep(300); return { ok: true }; },
@@ -305,7 +344,8 @@ function updateModeBadge() {
   const live = state.settings.mode === 'n8n';
   const b = $('#mode-badge');
   b.className = 'mode-badge' + (live ? ' live' : '');
-  b.innerHTML = `<i></i><span>${live ? 'Modo n8n' : 'Modo demonstração'}</span>`;
+  const who = live && state.settings.client ? ' · ' + esc(state.settings.client.name) : '';
+  b.innerHTML = `<i></i><span>${live ? 'Modo n8n' + who : 'Modo demonstração'}</span>`;
 }
 
 /* =====================================================================
@@ -365,7 +405,7 @@ function openConnectModal(accountId) {
     body: `<div id="conn-form">
         <p class="lead">Dê um nome para identificar este número no painel. Em seguida, leia o QR Code como no WhatsApp Web.</p>
         <label class="field"><span>Nome da conta</span><input id="conn-name" type="text" placeholder="Ex.: Atendimento Clush" value="${esc(acc ? acc.name : '')}" ${acc ? 'readonly' : ''}></label>
-        <label class="field"><span>Instância</span><input id="conn-instance" type="text" placeholder="clush-atendimento" value="${esc(acc ? acc.instance : '')}" ${acc ? 'readonly' : ''}><small>Identificador único, sem espaços. É o nome da instância na Evolution API.</small></label>
+        <label class="field"><span>Instância</span><input id="conn-instance" type="text" placeholder="clush-atendimento" value="${esc(acc ? acc.instance : '')}" ${acc ? 'readonly' : ''}><small>Identificador único, sem espaços. É o nome da instância na Evolution API.${instancePrefix() ? ` Começa sempre com <b>${esc(instancePrefix())}</b> (identifica a sua conta).` : ''}</small></label>
       </div>
       <div id="conn-qr" hidden>
         <div class="qr-wrap">
@@ -386,7 +426,7 @@ function openConnectModal(accountId) {
       if (acc) return;
       const n = $('#conn-name'); const i = $('#conn-instance'); let touched = false;
       i.addEventListener('input', () => { touched = true; });
-      n.addEventListener('input', () => { if (!touched) i.value = slug(n.value); });
+      n.addEventListener('input', () => { if (!touched) i.value = withPrefix(slug(n.value)); });
     },
     onClose: stopQr,
   });
@@ -499,7 +539,7 @@ function viewCampanha(id) {
     <button class="btn primary" type="button" data-act="groups-open" data-id="${c.id}">${icon('plus')} Criar grupos</button>`;
   const gi = groupInfo(c); const total = c.groups.reduce((s, g) => s + g.members, 0);
   const base = (state.settings.baseUrl || 'https://seu-n8n.com/webhook').replace(/\/+$/, '');
-  const link = `${base}/c/${c.slug}`;
+  const link = `${base}/go?c=${c.slug}`;
   let alert = '';
   if (c.groups.length && !gi.active) alert = `<div class="callout bad">${icon('alert')}<p>Todos os grupos estão lotados. Crie mais grupos para continuar recebendo gente.</p><button class="btn sm" type="button" data-act="groups-open" data-id="${c.id}">Criar grupos</button></div>`;
   else if (c.groups.length && gi.reserves < 1) alert = `<div class="callout">${icon('alert')}<p>A campanha está sem grupo reserva. Crie o próximo grupo antes que o grupo ativo lote.</p><button class="btn sm" type="button" data-act="groups-open" data-id="${c.id}">Criar reserva</button></div>`;
@@ -523,7 +563,9 @@ function viewCampanha(id) {
         <div><span class="pill ${g.adminsOnly ? 'warn' : 'off'}">${g.adminsOnly ? 'Só admins' : 'Todos'}</span></div>
         <div class="row-end"><button class="btn sm" type="button" data-act="copy" data-copy="${esc(g.inviteLink)}">${icon('copy')} Copiar link</button></div></div>`).join('')}</div>` : ''}
     <div class="panel"><h4>Link de entrada</h4>
-      <p class="muted" style="margin-bottom:10px">Link inteligente que leva cada pessoa para o grupo que está recebendo. Ele será servido pelo n8n quando o backend estiver ligado.</p>
+      <p class="muted" style="margin-bottom:10px">${state.settings.mode === 'n8n'
+        ? 'Link inteligente: leva cada pessoa para o primeiro grupo com vaga e passa para o próximo quando lota. Divulgue este link (pode encurtar no TinyURL).'
+        : 'Link inteligente: leva cada pessoa para o grupo que está recebendo. Em modo demonstração ele é só um exemplo; no modo n8n ele passa a funcionar.'}</p>
       <div class="copy-line"><code>${esc(link)}</code><button class="btn sm" type="button" data-act="copy" data-copy="${esc(link)}">${icon('copy')} Copiar</button></div></div>
     <div class="panel"><h4>Padrão dos grupos</h4>
       <dl class="summary" style="margin:0 0 14px">
@@ -532,6 +574,10 @@ function viewCampanha(id) {
         <dt>Limite</dt><dd>${GROUP_LIMIT} participantes</dd>
         <dt>Descrição</dt><dd>${esc(cfg.description || 'Sem descrição')}</dd></dl>
       <button class="btn danger sm" type="button" data-act="campaign-delete" data-id="${c.id}">${icon('trash')} Excluir campanha</button></div>`;
+  if (state.settings.mode === 'n8n' && c.groups.length) {
+    /* puxa do n8n a contagem mais recente (ele conta os participantes a cada minuto) */
+    syncCampaign(c).then((changed) => { if (changed && location.hash === '#/campanhas/' + c.id) route(); }).catch(() => { /* painel segue com os números locais */ });
+  }
 }
 function openGroupsModal(campId) {
   const c = getCampaign(campId); if (!c) return;
@@ -565,6 +611,24 @@ function openGroupsModal(campId) {
       $('#g-base').addEventListener('input', upd); $('#g-qty').addEventListener('input', upd); upd();
     },
   });
+}
+/* envia a campanha ao n8n (link inteligente) e traz de volta a contagem de participantes */
+function campaignPayload(c) {
+  return {
+    slug: c.slug, name: c.name, limit: GROUP_LIMIT,
+    groups: c.groups.map((g) => ({ id: g.id, n: g.n, name: g.name, members: g.members, inviteLink: g.inviteLink, instance: (getAccount(g.accountId) || {}).instance || '' })),
+  };
+}
+async function syncCampaign(c, { force = false } = {}) {
+  if (state.settings.mode !== 'n8n' || !c.groups.length) return false;
+  const r = await API.call('campaigns/sync', Object.assign(campaignPayload(c), { force }));
+  let changed = false;
+  (r.groups || []).forEach((u) => {
+    const g = c.groups.find((x) => x.id === u.id);
+    if (g && typeof u.members === 'number' && g.members !== u.members) { g.members = u.members; changed = true; }
+  });
+  if (changed) saveState();
+  return changed;
 }
 function fillGroups(c, count) {
   let remaining = count; const gs = [...c.groups].sort((a, b) => a.n - b.n);
@@ -656,7 +720,11 @@ function applyRemoteUpdate(a, u) {
   if (u.status) a.status = u.status;
   if (u.progress) a.progress = u.progress;
   if (u.log) a.log = u.log;
-  if (was !== 'concluída' && a.status === 'concluída') { applyEffects(a, u.links); toast('Ação concluída', 'success'); }
+  if (was !== 'concluída' && a.status === 'concluída') {
+    applyEffects(a, u.links); toast('Ação concluída', 'success');
+    /* nome e links mudaram: atualiza o link inteligente */
+    if (['rename', 'update_links'].includes(a.type)) a.campaignIds.forEach((id) => { const c = getCampaign(id); if (c) syncCampaign(c).catch(() => { /* tenta na próxima visita */ }); });
+  }
   if (was !== 'falhou' && a.status === 'falhou') toast('A ação falhou. Veja o registro nos detalhes.', 'error');
 }
 function checkScheduled() {
@@ -974,12 +1042,16 @@ function handleFile(input) {
    Configurações
    ===================================================================== */
 const API_DOCS = [
-  { path: 'ping', desc: 'Testa a conexão e a autenticação.', req: {}, res: { ok: true } },
+  { path: 'ping', desc: 'Testa a conexão e a senha. Devolve o cliente a quem a senha pertence; as contas dele começam com o prefixo.', req: {}, res: { ok: true, client: { id: 'bruno', name: 'Bruno', prefix: 'bruno-' } } },
+  { path: 'state/load', desc: 'Devolve os dados do painel (contas, campanhas, ações) guardados para o cliente.', req: {}, res: { state: { accounts: [], campaigns: [], actions: [] }, updatedAt: 1700000000000 } },
+  { path: 'state/save', desc: 'Guarda os dados do painel do cliente (limite de 2 MB).', req: { state: { accounts: [], campaigns: [], actions: [] } }, res: { ok: true } },
   { path: 'accounts/connect', desc: 'Cria a instância (se não existir) e devolve o QR Code.', req: { instance: 'clush-atendimento', name: 'Atendimento Clush' }, res: { qr: 'data:image/png;base64,...' } },
   { path: 'accounts/status', desc: 'Consulta o estado da conexão. O painel consulta a cada 3 segundos.', req: { instance: 'clush-atendimento' }, res: { state: 'open', number: '5547999999999' } },
   { path: 'accounts/logout', desc: 'Desconecta o número (mantém a instância).', req: { instance: 'clush-atendimento' }, res: { ok: true } },
   { path: 'accounts/delete', desc: 'Remove a instância.', req: { instance: 'clush-atendimento' }, res: { ok: true } },
   { path: 'groups/create', desc: 'Cria os grupos, aplica descrição, só admins e imagem, e devolve os links.', req: { instance: 'clush-atendimento', campaignId: 'camp_x', base: 'Bruno VIP', startAt: 1, quantity: 2, adminsOnly: true, description: '...', limit: 600, image: { name: 'logo.png', type: 'image/png', base64: '...' } }, res: { groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1', inviteLink: 'https://chat.whatsapp.com/...' }] } },
+  { path: 'campaigns/sync', desc: 'Envia a campanha e seus grupos para o link inteligente. Devolve a contagem atual de participantes. Com force=true o n8n aceita as contagens enviadas.', req: { slug: 'bruno-vip-123', name: 'Bruno VIP', limit: 600, force: false, groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1', members: 412, inviteLink: 'https://chat.whatsapp.com/...', instance: 'clush-atendimento' }] }, res: { ok: true, groups: [{ id: '1203...@g.us', members: 412 }] } },
+  { path: 'campaigns/delete', desc: 'Remove a campanha do link inteligente.', req: { slug: 'bruno-vip-123' }, res: { ok: true } },
   { path: 'groups/sync', desc: 'Conta os participantes de cada grupo (botão "Atualizar participantes" na campanha).', req: { instance: 'clush-atendimento', groupIds: ['1203...@g.us'] }, res: { groups: [{ id: '1203...@g.us', members: 412 }] } },
   { path: 'actions/run', desc: 'Recebe a ação completa (conteúdo, grupos, velocidade, agendamento). Se scheduledAt vier preenchido, o n8n agenda.', req: { action: { id: 'act_x', type: 'send_message', instance: 'clush-atendimento', groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1' }], content: { items: [{ id: 'it_x', kind: 'image', caption: 'Olá!', fileName: 'foto.jpg' }], mentionAll: false, pin: false, speed: { mode: 'normal', min: 15, max: 30 }, numbersList: [] }, scheduledAt: null }, files: { it_x: { name: 'foto.jpg', type: 'image/jpeg', base64: '...' } } }, res: { id: 'act_x', status: 'em andamento' } },
   { path: 'actions/status', desc: 'Progresso das ações abertas. O painel consulta a cada 5 segundos. Em "links" vão os novos links de convite (ação de atualizar links).', req: { ids: ['act_x'] }, res: { actions: [{ id: 'act_x', status: 'concluída', progress: { done: 4, total: 4 }, log: [{ t: 1760000000000, text: 'Bruno VIP #1: Texto enviado' }], links: { '1203...@g.us': 'https://chat.whatsapp.com/...' } }] } },
@@ -990,10 +1062,10 @@ function viewConfig() {
   $('#view').innerHTML = `<div class="panel"><h3>Conexão com o backend</h3><p class="lead">Em modo demonstração nada é enviado de verdade. Em modo n8n, cada ação chama um webhook seu.</p>
       <div class="row"><label class="field"><span>Modo</span><select id="cfg-mode"><option value="demo" ${s.mode === 'demo' ? 'selected' : ''}>Demonstração</option><option value="n8n" ${s.mode === 'n8n' ? 'selected' : ''}>n8n</option></select></label>
       <label class="field"><span>URL base dos webhooks</span><input id="cfg-url" type="text" value="${esc(s.baseUrl)}" placeholder="https://n8n.seudominio.com/webhook/viphub"></label></div>
-      <label class="field"><span>Token de autenticação (opcional)</span><input id="cfg-token" type="text" value="${esc(s.token)}" placeholder="Bearer abc123"><small>Enviado no cabeçalho Authorization.</small></label>
+      <label class="field"><span>Senha de acesso</span><input id="cfg-token" type="password" autocomplete="off" value="${esc(s.token)}" placeholder="A senha que você recebeu"><small>Identifica o seu cliente no n8n e é enviada no cabeçalho Authorization. ${s.client ? 'Conectado como <b>' + esc(s.client.name) + '</b>.' : ''}</small></label>
       <div style="display:flex;gap:8px"><button class="btn primary" type="button" data-act="cfg-save">Salvar</button><button class="btn" type="button" data-act="cfg-test">Testar conexão</button></div></div>
-    <div class="panel"><h3>Dados do painel</h3><p class="lead">Ficam guardados neste navegador.</p>
-      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" type="button" data-act="cfg-seed">Carregar dados de exemplo</button><button class="btn" type="button" data-act="cfg-export">Exportar</button>
+    <div class="panel"><h3>Dados do painel</h3><p class="lead">${s.mode === 'n8n' ? 'No modo n8n ficam guardados no servidor, na sua conta, e aparecem em qualquer aparelho. Este navegador mantém só uma cópia.' : 'Ficam guardados neste navegador.'}</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${s.mode === 'n8n' ? '<button class="btn" type="button" data-act="cfg-pull">Atualizar do servidor</button>' : ''}<button class="btn" type="button" data-act="cfg-seed">Carregar dados de exemplo</button><button class="btn" type="button" data-act="cfg-export">Exportar</button>
       <label class="btn">Importar<input id="cfg-import-file" type="file" accept="application/json" hidden></label><button class="btn danger" type="button" data-act="cfg-reset">Apagar tudo</button></div></div>
     <div class="panel"><h3>Contrato da API</h3><p class="lead">Todas as chamadas são POST com JSON para a URL base mais o caminho abaixo. É isso que cada webhook do n8n precisa responder.</p>
       ${API_DOCS.map((d) => `<div class="endpoint"><span class="method">POST</span><code>/${esc(d.path)}</code></div><p class="muted">${esc(d.desc)}</p>
@@ -1025,7 +1097,7 @@ A.copy = (el) => {
 A['account-connect'] = () => openConnectModal();
 A['account-reconnect'] = (el) => openConnectModal(el.dataset.id);
 A['conn-generate'] = async (btn) => {
-  const name = $('#conn-name').value.trim(); const instance = slug($('#conn-instance').value || name);
+  const name = $('#conn-name').value.trim(); const instance = withPrefix(slug($('#conn-instance').value || name));
   if (!name) return toast('Informe o nome da conta', 'error');
   if (!instance) return toast('Informe a instância', 'error');
   if (!btn.dataset.id && state.accounts.some((a) => a.instance === instance)) return toast('Já existe uma conta com essa instância', 'error');
@@ -1078,6 +1150,7 @@ A['campaign-create'] = () => {
 A['campaign-delete'] = async (el) => {
   const c = getCampaign(el.dataset.id); if (!c) return;
   if (!(await confirmDialog(`Excluir a campanha ${c.name}? Os grupos continuam no WhatsApp, mas saem do painel.`, { okLabel: 'Excluir', danger: true }))) return;
+  if (state.settings.mode === 'n8n') API.call('campaigns/delete', { slug: c.slug }).catch(() => { /* já não existe no n8n */ });
   state.campaigns = state.campaigns.filter((x) => x.id !== c.id); saveState(); toast('Campanha excluída'); location.hash = '#/campanhas';
 };
 A['campaign-action'] = (el) => { wiz = newWiz(el.dataset.id); location.hash = '#/acoes/nova'; };
@@ -1099,6 +1172,7 @@ A['groups-submit'] = async (btn) => {
     (res.groups || []).forEach((g) => c.groups.push({ id: g.id, n: g.n, name: g.name, members: 0, adminsOnly, description, inviteLink: g.inviteLink, accountId }));
     c.groupCfg = { base, adminsOnly, description }; if (!c.accountId) c.accountId = accountId;
     saveState(); closeModal(); toast(`${(res.groups || []).length} grupos criados`, 'success'); route();
+    syncCampaign(c).catch(() => toast('Grupos criados, mas o link inteligente não foi atualizado. Abra a campanha de novo para tentar outra vez.', 'error'));
   } catch (e) { toast(e.message, 'error'); setBusy(btn, false); }
 };
 A['groups-sync'] = async (btn) => {
@@ -1109,7 +1183,9 @@ A['groups-sync'] = async (btn) => {
   try {
     const r = await API.call('groups/sync', { instance: acc.instance, groupIds: c.groups.map((g) => g.id) });
     (r.groups || []).forEach((u) => { const g = c.groups.find((x) => x.id === u.id); if (g && typeof u.members === 'number') g.members = u.members; });
-    saveState(); toast('Participantes atualizados', 'success'); route();
+    saveState();
+    try { await syncCampaign(c, { force: true }); } catch (e) { /* o link inteligente recontará sozinho em 1 minuto */ }
+    toast('Participantes atualizados', 'success'); route();
   } catch (e) { toast(e.message, 'error'); setBusy(btn, false); }
 };
 A['sim-joins'] = (el) => {
@@ -1195,11 +1271,19 @@ A['wiz-submit'] = async (btn) => {
 /* configurações */
 A['cfg-save'] = () => {
   state.settings.mode = $('#cfg-mode').value; state.settings.baseUrl = $('#cfg-url').value.trim(); state.settings.token = $('#cfg-token').value.trim();
+  if (state.settings.mode !== 'n8n') { state.settings.client = null; remote.ready = false; }
   saveState(); updateModeBadge(); toast('Configurações salvas', 'success');
 };
 A['cfg-test'] = async (btn) => {
   A['cfg-save'](); setBusy(btn, true);
-  try { await API.call('ping', {}); toast('Conexão funcionando', 'success'); } catch (e) { toast(e.message, 'error'); } finally { setBusy(btn, false); }
+  try {
+    if (state.settings.mode === 'n8n') { await connectRemote({ quiet: true }); toast('Conexão funcionando' + (state.settings.client ? '. Conectado como ' + state.settings.client.name : ''), 'success'); route(); }
+    else { await API.call('ping', {}); toast('Conexão funcionando', 'success'); }
+  } catch (e) { toast(e.message, 'error'); } finally { setBusy(btn, false); }
+};
+A['cfg-pull'] = async (btn) => {
+  setBusy(btn, true);
+  try { await connectRemote(); toast('Dados atualizados do servidor', 'success'); } catch (e) { toast(e.message, 'error'); } finally { setBusy(btn, false); }
 };
 A['cfg-seed'] = () => { seedDemo(); toast('Dados de exemplo carregados', 'success'); };
 A['cfg-export'] = () => {
@@ -1251,6 +1335,7 @@ function init() {
   updateModeBadge();
   route();
   state.actions.forEach((a) => { if (a.status === 'em andamento' && state.settings.mode === 'demo') startSim(a.id); });
+  if (state.settings.mode === 'n8n') connectRemote().catch((e) => toast('Não consegui conectar ao n8n: ' + e.message, 'error'));
   checkScheduled();
   setInterval(checkScheduled, 15000);
   setInterval(pollRemote, 5000);
