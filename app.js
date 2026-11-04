@@ -105,7 +105,7 @@ const icon = (n, cls = '') => `<svg class="ico ${cls}" viewBox="0 0 24 24" fill=
 /* ---------- state ---------- */
 const defaultState = () => ({
   accounts: [], campaigns: [], actions: [],
-  settings: { mode: 'demo', baseUrl: '', token: '', theme: 'light', client: null },
+  settings: { mode: 'demo', baseUrl: '', token: '', mediaUrl: '', theme: 'light', client: null },
 });
 function loadState() {
   try {
@@ -274,11 +274,32 @@ function fileToBase64(file) {
     r.onerror = reject; r.readAsDataURL(file);
   });
 }
-async function collectFiles(action) {
+/* servidor de arquivos próprio (vídeos grandes): o arquivo vai direto para ele, sem passar pelo n8n */
+function mediaBase() { return String(state.settings.mediaUrl || '').trim().replace(/\/+$/, ''); }
+function uploadMedia(file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', mediaBase() + '/upload');
+    x.setRequestHeader('Authorization', state.settings.token);
+    x.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+    x.setRequestHeader('X-File-Type', file.type || 'application/octet-stream');
+    x.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100)); };
+    x.onload = () => {
+      let r = {}; try { r = JSON.parse(x.responseText); } catch (e) { /* ok */ }
+      if (x.status >= 200 && x.status < 300 && r.id) resolve({ name: file.name, type: file.type, size: file.size, mediaId: r.id, url: mediaBase() + r.path });
+      else reject(new Error('Falha ao enviar o arquivo para o servidor (' + x.status + '): ' + (r.error || x.responseText || '').slice(0, 120)));
+    };
+    x.onerror = () => reject(new Error('Não consegui falar com o servidor de arquivos. Confira o endereço em Configurações.'));
+    x.send(file);
+  });
+}
+async function collectFiles(action, onProgress) {
   const files = {};
   for (const it of (action.content.items || [])) {
     const f = fileStore.get(it.id);
-    if (f) files[it.id] = { name: f.name, type: f.type, base64: await fileToBase64(f) };
+    if (!f) continue;
+    if (mediaBase()) files[it.id] = await uploadMedia(f, (p) => onProgress && onProgress(it.fileName || f.name, p));
+    else files[it.id] = { name: f.name, type: f.type, base64: await fileToBase64(f) };
   }
   const gi = fileStore.get('groupImage');
   if (action.type === 'image' && gi) files.groupImage = { name: gi.name, type: gi.type, base64: await fileToBase64(gi) };
@@ -294,7 +315,7 @@ const ACTION_TYPES = {
   description: { label: 'Trocar descrição', icon: 'type', desc: 'Atualiza o texto de descrição dos grupos.' },
   image: { label: 'Trocar imagem', icon: 'image', desc: 'Define uma nova foto para os grupos.' },
   settings: { label: 'Trocar configuração', icon: 'settings', desc: 'Quem pode enviar mensagens e editar os dados do grupo.' },
-  add_admin: { label: 'Adicionar ADM', icon: 'userPlus', desc: 'Promove números a administradores.' },
+  add_admin: { label: 'Adicionar ADM', icon: 'userPlus', desc: 'Adiciona os números ao grupo (se ainda não estiverem) e promove a administradores.' },
   remove_admin: { label: 'Remover ADM', icon: 'userMinus', desc: 'Rebaixa administradores para participantes.' },
   remove_participants: { label: 'Remover participantes', icon: 'users', desc: 'Tira números específicos dos grupos.' },
   update_links: { label: 'Atualizar links dos grupos', icon: 'link', desc: 'Gera novos links de convite e invalida os antigos.' },
@@ -799,6 +820,13 @@ function applyRemoteUpdate(a, u) {
   if (u.status) a.status = u.status;
   if (u.progress) a.progress = u.progress;
   if (u.log) a.log = u.log;
+  if (Array.isArray(u.notices) && u.notices.length) {
+    a.noticesSeen = a.noticesSeen || 0;
+    const fresh = u.notices.slice(a.noticesSeen);
+    a.noticesSeen = u.notices.length;
+    fresh.slice(0, 3).forEach((m) => toast(m, 'error'));
+    if (fresh.length > 3) toast('Mais ' + (fresh.length - 3) + ' número(s) não puderam ser adicionados. Veja o registro da ação.', 'error');
+  }
   if (was !== 'concluída' && a.status === 'concluída') {
     applyEffects(a, u.links); toast('Ação concluída', 'success');
     /* nome e links mudaram: atualiza o link inteligente */
@@ -1127,7 +1155,11 @@ function handleFile(input) {
   if (kind === 'audio' && !/\.ogg$/i.test(f.name)) { toast('O áudio precisa estar no formato .ogg', 'error'); input.value = ''; return; }
   if (kind === 'image' && !f.type.startsWith('image/')) { toast('Escolha um arquivo de imagem', 'error'); input.value = ''; return; }
   if (kind === 'video' && !f.type.startsWith('video/')) { toast('Escolha um arquivo de vídeo', 'error'); input.value = ''; return; }
-  if (f.size > 64 * 1024 * 1024) { toast('O arquivo passa de 64 MB', 'error'); input.value = ''; return; }
+  const maxMb = state.settings.mode === 'n8n' && !mediaBase() ? 12 : 100;
+  if (f.size > maxMb * 1024 * 1024) {
+    toast('O arquivo tem ' + (f.size / 1048576).toFixed(1) + ' MB e o limite é ' + maxMb + ' MB.' + (maxMb === 12 ? ' Para arquivos maiores, preencha o Servidor de arquivos em Configurações.' : ''), 'error');
+    input.value = ''; return;
+  }
   dropFile(key); fileStore.set(key, f);
   if (key === 'groupImage') { wiz.content.imageName = f.name; wiz.content.imageSize = f.size; }
   else { const it = wiz.content.items.find((x) => x.id === key); if (it) { it.fileName = f.name; it.fileSize = f.size; it.fileType = f.type; } }
@@ -1160,6 +1192,7 @@ function viewConfig() {
   $('#view').innerHTML = `<div class="panel"><h3>Conexão com o backend</h3><p class="lead">Em modo demonstração nada é enviado de verdade. Em modo n8n, cada ação chama um webhook seu.</p>
       <div class="row"><label class="field"><span>Modo</span><select id="cfg-mode"><option value="demo" ${s.mode === 'demo' ? 'selected' : ''}>Demonstração</option><option value="n8n" ${s.mode === 'n8n' ? 'selected' : ''}>n8n</option></select></label>
       <label class="field"><span>URL base dos webhooks</span><input id="cfg-url" type="text" value="${esc(s.baseUrl)}" placeholder="https://n8n.seudominio.com/webhook/viphub"></label></div>
+      <label class="field"><span>Servidor de arquivos (opcional)</span><input id="cfg-media" type="text" value="${esc(s.mediaUrl || '')}" placeholder="https://midia.seudominio.com"><small>Para enviar vídeos e arquivos grandes (até 100 MB). O arquivo sobe para o seu servidor, é enviado aos grupos e apagado depois. Em branco, o limite é 12 MB.</small></label>
       <label class="field"><span>Senha de acesso</span><input id="cfg-token" type="password" autocomplete="off" value="${esc(s.token)}" placeholder="A senha que você recebeu"><small>Identifica o seu cliente no n8n e é enviada no cabeçalho Authorization. ${s.client ? 'Conectado como <b>' + esc(s.client.name) + '</b>.' : ''}</small></label>
       <div style="display:flex;gap:8px"><button class="btn primary" type="button" data-act="cfg-save">Salvar</button><button class="btn" type="button" data-act="cfg-test">Testar conexão</button></div></div>
     <div class="panel"><h3>Dados do painel</h3><p class="lead">${s.mode === 'n8n' ? 'No modo n8n ficam guardados no servidor, na sua conta, e aparecem em qualquer aparelho. Este navegador mantém só uma cópia.' : 'Ficam guardados neste navegador.'}</p>
@@ -1399,21 +1432,24 @@ A['wiz-submit'] = async (btn) => {
   }
   const err = validateContent(); if (err) { wiz.step = 5; renderWizard(); return toast(err, 'error'); }
   setBusy(btn, true);
+  const label = btn.textContent;
   try {
     const action = buildAction(); const payload = { action };
-    if (state.settings.mode === 'n8n') payload.files = await collectFiles(action);
+    if (state.settings.mode === 'n8n') payload.files = await collectFiles(action, (n, p) => { btn.textContent = 'Enviando ' + (n.length > 22 ? n.slice(0, 20) + '...' : n) + ' ' + p + '%'; });
+    btn.textContent = label;
     const res = await API.call('actions/run', payload);
     if (res.id) action.id = res.id; if (res.status) action.status = res.status;
     state.actions.unshift(action); saveState();
     if (state.settings.mode === 'demo' && action.status === 'em andamento') startSim(action.id);
     const later = action.status === 'agendada';
     wiz = null; toast(later ? 'Ação agendada' : 'Ação iniciada', 'success'); location.hash = '#/acoes';
-  } catch (e) { toast(e.message, 'error'); setBusy(btn, false); }
+  } catch (e) { toast(e.message, 'error'); setBusy(btn, false); btn.textContent = label; }
 };
 
 /* configurações */
 A['cfg-save'] = () => {
   state.settings.mode = $('#cfg-mode').value; state.settings.baseUrl = $('#cfg-url').value.trim(); state.settings.token = $('#cfg-token').value.trim();
+  state.settings.mediaUrl = ($('#cfg-media') ? $('#cfg-media').value : state.settings.mediaUrl || '').trim().replace(/\/+$/, '');
   if (state.settings.mode !== 'n8n') { state.settings.client = null; remote.ready = false; }
   saveState(); updateModeBadge(); toast('Configurações salvas', 'success');
 };
