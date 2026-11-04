@@ -498,3 +498,5 @@ pre.code { background: var(--side); color: #d3e3ec; padding: 14px; border-radius
 .imp-size.full { color: var(--danger); }
 .imp-tag { font-size: 12px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
 @media (max-width: 560px) { .imp-row { grid-template-columns: auto 1fr auto; } .imp-tag { display: none; } }
+
+.pair-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 30px; font-weight: 700; letter-spacing: .12em; text-align: center; padding: 22px 8px; width: 100%; display: grid; place-items: center; color: var(--ink); }
