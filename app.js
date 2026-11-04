@@ -765,7 +765,7 @@ function viewAcoes() {
         <div class="cell-main col-hide"><b class="trunc">${esc(a.accountName || '-')}</b></div>
         <div class="cell-main col-hide"><span>${fmtDate(a.scheduledAt || a.createdAt)}</span></div>
         <div><span class="pill ${STATUS_PILL[a.status] || 'off'}">${esc(a.status)}</span>${a.status === 'em andamento' ? `<div class="progress"><i style="width:${pct}%"></i></div>` : ''}</div>
-        <div class="row-end"><button class="btn sm" type="button" data-act="action-open" data-id="${a.id}">Detalhes</button></div></div>`;
+        <div class="row-end"><button class="btn sm" type="button" title="Criar uma nova ação a partir desta" data-act="action-duplicate" data-id="${a.id}">Duplicar</button><button class="btn sm" type="button" data-act="action-open" data-id="${a.id}">Detalhes</button></div></div>`;
     }).join('')}</div>` : '<div class="empty"><p>Nenhuma ação com esse filtro.</p></div>'}`;
 }
 function resolveTargets(a) {
@@ -889,6 +889,7 @@ function openActionModal(id) {
   openModal({
     title: (ACTION_TYPES[a.type] || { label: 'Ação' }).label, size: 'lg', body: actionDetailHtml(a),
     footer: `<button class="btn danger sm" type="button" data-act="action-delete" data-id="${a.id}">${icon('trash')} Excluir</button>
+      <button class="btn" type="button" data-act="action-duplicate" data-id="${a.id}">Duplicar</button>
       <button class="btn" type="button" data-act="action-cancel" data-id="${a.id}">Cancelar ação</button><button class="btn primary" type="button" data-act="modal-close">Fechar</button>`,
     onClose: () => { openActionId = null; },
   });
@@ -1387,6 +1388,39 @@ A['sim-joins'] = (el) => {
 A['new-action'] = () => { wiz = newWiz(); location.hash = '#/acoes/nova'; };
 A['action-filter'] = (el) => { actionsFilter = el.dataset.f; viewAcoes(); };
 A['action-open'] = (el) => openActionModal(el.dataset.id);
+/* duplicar: abre o assistente já preenchido com os dados da ação, sem enviar nada */
+A['action-duplicate'] = (el) => {
+  const a = getAction(el.dataset.id); if (!a) return;
+  const campaignIds = (a.campaignIds || []).filter((id) => getCampaign(id));
+  if (!campaignIds.length) return toast('As campanhas desta ação não existem mais. Crie a ação do zero.', 'error');
+  const w = newWiz();
+  w.type = a.type; w.campaignIds = campaignIds;
+  campaignIds.forEach((id) => {
+    const t = a.targets && a.targets[id];
+    const c = getCampaign(id);
+    w.targets[id] = Array.isArray(t) ? t.filter((gid) => c.groups.some((g) => g.id === gid)) : '*';
+    if (Array.isArray(w.targets[id]) && !w.targets[id].length) w.targets[id] = '*';
+  });
+  const acc = getAccount(a.accountId);
+  w.accountId = acc && acc.status === 'connected' ? acc.id : '';
+  const base = JSON.parse(JSON.stringify(a.content || {}));
+  delete base.numbersList;
+  if (!base.numbers && a.content && Array.isArray(a.content.numbersList)) base.numbers = a.content.numbersList.join('\n');
+  w.content = Object.assign(w.content, base);
+  let needFiles = false;
+  (w.content.items || []).forEach((it) => {
+    it.id = uid('it');
+    if (['image', 'video', 'audio', 'file'].includes(it.kind)) { it.fileName = ''; it.fileSize = 0; it.fileType = ''; needFiles = true; }
+  });
+  if (a.type === 'image') { w.content.imageName = ''; w.content.imageSize = 0; needFiles = true; }
+  w.schedule = { mode: 'now', at: '' };
+  w.step = !w.accountId ? 3 : needFiles ? 5 : 6;
+  wiz = w;
+  closeModal();
+  location.hash = '#/acoes/nova';
+  toast('Ação copiada. Revise e confirme para enviar.' + (needFiles ? ' Anexe os arquivos de novo.' : '') + (!w.accountId ? ' Escolha a conta que vai executar.' : ''), 'success');
+  if (location.hash === '#/acoes/nova') renderWizard();
+};
 A['action-cancel'] = async (el) => {
   const a = getAction(el.dataset.id); if (!a) return;
   if (!['agendada', 'em andamento'].includes(a.status)) return toast('Essa ação já foi finalizada');
