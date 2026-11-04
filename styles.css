@@ -500,3 +500,6 @@ pre.code { background: var(--side); color: #d3e3ec; padding: 14px; border-radius
 @media (max-width: 560px) { .imp-row { grid-template-columns: auto 1fr auto; } .imp-tag { display: none; } }
 
 .pair-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 30px; font-weight: 700; letter-spacing: .12em; text-align: center; padding: 22px 8px; width: 100%; display: grid; place-items: center; color: var(--ink); }
+
+.row-end .btn[disabled] { opacity: .35; cursor: default; }
+.row-end { gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
