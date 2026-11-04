@@ -8,7 +8,7 @@
    Toda a comunicação com o backend passa pelo objeto API (seção "API").
    ===================================================================== */
 
-const GROUP_LIMIT = 600;
+const GROUP_LIMIT = 800;
 const STORAGE_KEY = 'viphub.v1';
 
 /* ---------- helpers ---------- */
@@ -237,7 +237,7 @@ const Mock = {
   async 'groups/list'() {
     await sleep(700);
     const mk = (i, name, size, ad) => ({ id: '1203630000000000' + i + '@g.us', name, size, description: 'Grupo antigo da conta', adminsOnly: ad, createdAt: Date.now() - 864e5 * (60 - i * 3) });
-    return { groups: [mk(1, 'Promoções 1', 600, true), mk(2, 'Promoções 2', 598, true), mk(3, 'Promoções 3', 311, true), mk(4, 'Promoções 10', 42, false), mk(5, 'Equipe interna', 8, false), mk(6, 'Clientes VIP', 150, true)] };
+    return { groups: [mk(1, 'Promoções 1', 800, true), mk(2, 'Promoções 2', 798, true), mk(3, 'Promoções 3', 311, true), mk(4, 'Promoções 10', 42, false), mk(5, 'Equipe interna', 8, false), mk(6, 'Clientes VIP', 150, true)] };
   },
   async 'groups/import'({ groupIds }) { await sleep(600); return { links: (groupIds || []).map((id, i) => ({ id, inviteLink: i % 4 === 3 ? '' : 'https://chat.whatsapp.com/' + randomCode() })) }; },
   async 'state/load'() { return { state: null }; },
@@ -1147,8 +1147,8 @@ const API_DOCS = [
   { path: 'accounts/status', desc: 'Consulta o estado da conexão. O painel consulta a cada 3 segundos.', req: { instance: 'clush-atendimento' }, res: { state: 'open', number: '5547999999999' } },
   { path: 'accounts/logout', desc: 'Desconecta o número (mantém a instância).', req: { instance: 'clush-atendimento' }, res: { ok: true } },
   { path: 'accounts/delete', desc: 'Remove a instância.', req: { instance: 'clush-atendimento' }, res: { ok: true } },
-  { path: 'groups/create', desc: 'Cria os grupos, aplica descrição, só admins e imagem, e devolve os links.', req: { instance: 'clush-atendimento', campaignId: 'camp_x', base: 'Bruno VIP', startAt: 1, quantity: 2, participants: ['5547999990000'], adminsOnly: true, description: '...', limit: 600, image: { name: 'logo.png', type: 'image/png', base64: '...' } }, res: { groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1', inviteLink: 'https://chat.whatsapp.com/...' }] } },
-  { path: 'campaigns/sync', desc: 'Envia a campanha e seus grupos para o link inteligente. Devolve a contagem atual de participantes. Com force=true o n8n aceita as contagens enviadas.', req: { slug: 'bruno-vip-123', name: 'Bruno VIP', limit: 600, force: false, groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1', members: 412, inviteLink: 'https://chat.whatsapp.com/...', instance: 'clush-atendimento' }] }, res: { ok: true, groups: [{ id: '1203...@g.us', members: 412 }] } },
+  { path: 'groups/create', desc: 'Cria os grupos, aplica descrição, só admins e imagem, e devolve os links.', req: { instance: 'clush-atendimento', campaignId: 'camp_x', base: 'Bruno VIP', startAt: 1, quantity: 2, participants: ['5547999990000'], adminsOnly: true, description: '...', limit: 800, image: { name: 'logo.png', type: 'image/png', base64: '...' } }, res: { groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1', inviteLink: 'https://chat.whatsapp.com/...' }] } },
+  { path: 'campaigns/sync', desc: 'Envia a campanha e seus grupos para o link inteligente. Devolve a contagem atual de participantes. Com force=true o n8n aceita as contagens enviadas.', req: { slug: 'bruno-vip-123', name: 'Bruno VIP', limit: 800, force: false, groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1', members: 412, inviteLink: 'https://chat.whatsapp.com/...', instance: 'clush-atendimento' }] }, res: { ok: true, groups: [{ id: '1203...@g.us', members: 412 }] } },
   { path: 'campaigns/delete', desc: 'Remove a campanha do link inteligente.', req: { slug: 'bruno-vip-123' }, res: { ok: true } },
   { path: 'groups/sync', desc: 'Conta os participantes de cada grupo (botão "Atualizar participantes" na campanha).', req: { instance: 'clush-atendimento', groupIds: ['1203...@g.us'] }, res: { groups: [{ id: '1203...@g.us', members: 412 }] } },
   { path: 'actions/run', desc: 'Recebe a ação completa (conteúdo, grupos, velocidade, agendamento). Se scheduledAt vier preenchido, o n8n agenda.', req: { action: { id: 'act_x', type: 'send_message', instance: 'clush-atendimento', groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1' }], content: { items: [{ id: 'it_x', kind: 'image', caption: 'Olá!', fileName: 'foto.jpg' }], mentionAll: false, pin: false, speed: { mode: 'normal', min: 15, max: 30 }, numbersList: [] }, scheduledAt: null }, files: { it_x: { name: 'foto.jpg', type: 'image/jpeg', base64: '...' } } }, res: { id: 'act_x', status: 'em andamento' } },
@@ -1172,7 +1172,7 @@ function viewConfig() {
 function seedDemo() {
   const acc = { id: uid('acc'), name: 'Atendimento Bruno', instance: 'bruno-atendimento', number: '5547991234567', status: 'connected', createdAt: Date.now() - 864e5 * 3 };
   const mk = (n, members) => ({ id: uid('g') + '@g.us', n, name: `Bruno VIP #${n}`, members, adminsOnly: true, description: 'Grupo VIP com ofertas antecipadas.', inviteLink: 'https://chat.whatsapp.com/' + randomCode(), accountId: acc.id });
-  const camp = { id: uid('camp'), name: 'Bruno VIP', slug: 'bruno-vip-' + rand(100, 999), description: 'Lista VIP de revendedores', accountId: acc.id, groupCfg: { base: 'Bruno VIP', adminsOnly: true, description: 'Grupo VIP com ofertas antecipadas.' }, groups: [mk(1, 598), mk(2, 120), mk(3, 0)], createdAt: Date.now() - 864e5 };
+  const camp = { id: uid('camp'), name: 'Bruno VIP', slug: 'bruno-vip-' + rand(100, 999), description: 'Lista VIP de revendedores', accountId: acc.id, groupCfg: { base: 'Bruno VIP', adminsOnly: true, description: 'Grupo VIP com ofertas antecipadas.' }, groups: [mk(1, 798), mk(2, 120), mk(3, 0)], createdAt: Date.now() - 864e5 };
   state.accounts.push(acc); state.campaigns.push(camp); saveState();
 }
 
