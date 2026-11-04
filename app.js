@@ -297,7 +297,11 @@ async function collectFiles(action, onProgress) {
   const files = {};
   for (const it of (action.content.items || [])) {
     const f = fileStore.get(it.id);
-    if (!f) continue;
+    if (!f) {
+      const kept = wiz && wiz.keptMedia && wiz.keptMedia[it.id];
+      if (it.kept && kept) files[it.id] = kept;
+      continue;
+    }
     if (mediaBase()) files[it.id] = await uploadMedia(f, (p) => onProgress && onProgress(it.fileName || f.name, p));
     else files[it.id] = { name: f.name, type: f.type, base64: await fileToBase64(f) };
   }
@@ -765,7 +769,7 @@ function viewAcoes() {
         <div class="cell-main col-hide"><b class="trunc">${esc(a.accountName || '-')}</b></div>
         <div class="cell-main col-hide"><span>${fmtDate(a.scheduledAt || a.createdAt)}</span></div>
         <div><span class="pill ${STATUS_PILL[a.status] || 'off'}">${esc(a.status)}</span>${a.status === 'em andamento' ? `<div class="progress"><i style="width:${pct}%"></i></div>` : ''}</div>
-        <div class="row-end"><button class="btn sm" type="button" title="Criar uma nova ação a partir desta" data-act="action-duplicate" data-id="${a.id}">Duplicar</button><button class="btn sm" type="button" data-act="action-open" data-id="${a.id}">Detalhes</button></div></div>`;
+        <div class="row-end">${a.status === 'agendada' ? `<button class="btn sm" type="button" data-act="action-edit" data-id="${a.id}">Editar</button>` : ''}<button class="btn sm" type="button" title="Criar uma nova ação a partir desta" data-act="action-duplicate" data-id="${a.id}">Duplicar</button><button class="btn sm" type="button" data-act="action-open" data-id="${a.id}">Detalhes</button></div></div>`;
     }).join('')}</div>` : '<div class="empty"><p>Nenhuma ação com esse filtro.</p></div>'}`;
 }
 function resolveTargets(a) {
@@ -889,7 +893,7 @@ function openActionModal(id) {
   openModal({
     title: (ACTION_TYPES[a.type] || { label: 'Ação' }).label, size: 'lg', body: actionDetailHtml(a),
     footer: `<button class="btn danger sm" type="button" data-act="action-delete" data-id="${a.id}">${icon('trash')} Excluir</button>
-      <button class="btn" type="button" data-act="action-duplicate" data-id="${a.id}">Duplicar</button>
+      ${a.status === 'agendada' ? `<button class="btn" type="button" data-act="action-edit" data-id="${a.id}">Editar</button>` : ''}<button class="btn" type="button" data-act="action-duplicate" data-id="${a.id}">Duplicar</button>
       <button class="btn" type="button" data-act="action-cancel" data-id="${a.id}">Cancelar ação</button><button class="btn primary" type="button" data-act="modal-close">Fechar</button>`,
     onClose: () => { openActionId = null; },
   });
@@ -965,14 +969,14 @@ function renderWizard() {
   $('#page-actions').innerHTML = '';
   const body = [step1, step2, step3, step4, step5, step6][wiz.step - 1]();
   $('#view').innerHTML = `<div class="wizard"><ol class="stepper">${WIZ_STEPS.map((s, i) => `<li class="${i + 1 === wiz.step ? 'on' : ''} ${i + 1 < wiz.step ? 'done' : ''}" ${i + 1 < wiz.step ? `data-act="wiz-goto" data-step="${i + 1}"` : ''}><span>${i + 1 < wiz.step ? icon('check') : i + 1}</span>${s}</li>`).join('')}</ol>
-    <div><div class="wiz-panel">${body}</div>${wizFooter()}</div></div>`;
+    <div>${wiz.editId ? `<div class="callout">${icon('alert')}<p>Você está editando uma ação agendada. Nada muda até você clicar em <b>Salvar alterações</b> no último passo.</p></div>` : ''}<div class="wiz-panel">${body}</div>${wizFooter()}</div></div>`;
   refreshPreview();
 }
 function wizFooter() {
   const last = wiz.step === 6;
   return `<div class="wiz-foot"><button class="btn ghost" type="button" data-act="wiz-cancel">Descartar</button><div class="grp">
     ${wiz.step > 1 ? '<button class="btn" type="button" data-act="wiz-back">Voltar</button>' : ''}
-    ${last ? `<button class="btn primary" type="button" data-act="wiz-submit">${wiz.schedule.mode === 'now' ? 'Enviar agora' : 'Agendar'}</button>` : '<button class="btn primary" type="button" data-act="wiz-next">Continuar</button>'}</div></div>`;
+    ${last ? `<button class="btn primary" type="button" data-act="wiz-submit">${wiz.editId ? (wiz.schedule.mode === 'now' ? 'Salvar e enviar agora' : 'Salvar alterações') : wiz.schedule.mode === 'now' ? 'Enviar agora' : 'Agendar'}</button>` : '<button class="btn primary" type="button" data-act="wiz-next">Continuar</button>'}</div></div>`;
 }
 function step1() {
   if (!state.campaigns.length) return emptyState('layers', 'Nenhuma campanha criada', 'Crie uma campanha e seus grupos antes de montar uma ação.', '<a class="btn primary" href="#/campanhas">Ir para Campanhas</a>');
@@ -1096,7 +1100,7 @@ function validateContent() {
       for (let i = 0; i < c.items.length; i++) {
         const it = c.items[i]; const n = `Conteúdo ${i + 1} (${KINDS[it.kind].label})`;
         if (it.kind === 'text' && !it.text.trim()) return `${n}: escreva a mensagem.`;
-        if (['image', 'video', 'audio', 'file'].includes(it.kind) && !fileStore.has(it.id)) return `${n}: escolha um arquivo.`;
+        if (['image', 'video', 'audio', 'file'].includes(it.kind) && !fileStore.has(it.id) && !it.kept) return `${n}: escolha um arquivo.`;
         if (it.kind === 'button') {
           if (!it.text.trim() || !it.label.trim()) return `${n}: preencha o texto e o nome do botão.`;
           if (!/^https?:\/\/\S+$/i.test(it.url.trim())) return `${n}: informe um link válido começando com http.`;
@@ -1163,7 +1167,7 @@ function handleFile(input) {
   }
   dropFile(key); fileStore.set(key, f);
   if (key === 'groupImage') { wiz.content.imageName = f.name; wiz.content.imageSize = f.size; }
-  else { const it = wiz.content.items.find((x) => x.id === key); if (it) { it.fileName = f.name; it.fileSize = f.size; it.fileType = f.type; } }
+  else { const it = wiz.content.items.find((x) => x.id === key); if (it) { it.fileName = f.name; it.fileSize = f.size; it.fileType = f.type; it.kept = false; } }
   renderWizard();
 }
 
@@ -1186,7 +1190,7 @@ const API_DOCS = [
   { path: 'groups/sync', desc: 'Conta os participantes de cada grupo (botão "Atualizar participantes" na campanha).', req: { instance: 'clush-atendimento', groupIds: ['1203...@g.us'] }, res: { groups: [{ id: '1203...@g.us', members: 412 }] } },
   { path: 'actions/run', desc: 'Recebe a ação completa (conteúdo, grupos, velocidade, agendamento). Se scheduledAt vier preenchido, o n8n agenda.', req: { action: { id: 'act_x', type: 'send_message', instance: 'clush-atendimento', groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1' }], content: { items: [{ id: 'it_x', kind: 'image', caption: 'Olá!', fileName: 'foto.jpg' }], mentionAll: false, pin: false, speed: { mode: 'normal', min: 15, max: 30 }, numbersList: [] }, scheduledAt: null }, files: { it_x: { name: 'foto.jpg', type: 'image/jpeg', base64: '...' } } }, res: { id: 'act_x', status: 'em andamento' } },
   { path: 'actions/status', desc: 'Progresso das ações abertas. O painel consulta a cada 5 segundos. Em "links" vão os novos links de convite (ação de atualizar links).', req: { ids: ['act_x'] }, res: { actions: [{ id: 'act_x', status: 'concluída', progress: { done: 4, total: 4 }, log: [{ t: 1760000000000, text: 'Bruno VIP #1: Texto enviado' }], links: { '1203...@g.us': 'https://chat.whatsapp.com/...' } }] } },
-  { path: 'actions/cancel', desc: 'Cancela uma ação agendada ou em andamento.', req: { id: 'act_x' }, res: { ok: true } },
+  { path: 'actions/cancel', desc: 'Cancela uma ação agendada ou em andamento e apaga os arquivos dela do servidor de arquivos. Com keepMedia: true os arquivos ficam (usado ao editar uma ação agendada).', req: { id: 'act_x', keepMedia: false }, res: { ok: true } },
 ];
 function viewConfig() {
   const s = state.settings;
@@ -1389,10 +1393,29 @@ A['new-action'] = () => { wiz = newWiz(); location.hash = '#/acoes/nova'; };
 A['action-filter'] = (el) => { actionsFilter = el.dataset.f; viewAcoes(); };
 A['action-open'] = (el) => openActionModal(el.dataset.id);
 /* duplicar: abre o assistente já preenchido com os dados da ação, sem enviar nada */
-A['action-duplicate'] = (el) => {
+A['action-edit'] = (el) => {
+  const a = getAction(el.dataset.id); if (!a) return;
+  if (a.status !== 'agendada') return toast('Só dá para editar ações que ainda estão agendadas.', 'error');
+  if (!A['action-duplicate'](el, { quiet: true })) return;
+  wiz.editId = a.id;
+  wiz.schedule = { mode: 'later', at: a.scheduledAt ? toLocalInput(new Date(a.scheduledAt)) : '' };
+  /* arquivos que já estão no servidor de arquivos continuam valendo sem precisar anexar de novo */
+  wiz.keptMedia = a.media || {};
+  let needFiles = false;
+  (wiz.content.items || []).forEach((it, i) => {
+    const old = (a.content.items || [])[i];
+    if (old && wiz.keptMedia[old.id]) { wiz.keptMedia[it.id] = wiz.keptMedia[old.id]; it.kept = true; it.fileName = old.fileName; it.fileSize = old.fileSize; it.fileType = old.fileType; }
+    else if (['image', 'video', 'audio', 'file'].includes(it.kind)) needFiles = true;
+  });
+  if (a.type === 'image') needFiles = true;
+  wiz.step = !wiz.accountId ? 3 : 5;
+  toast('Editando a ação agendada.' + (needFiles ? ' Anexe os arquivos de novo.' : '') + (!wiz.accountId ? ' Escolha a conta que vai executar.' : ''), 'success');
+  renderWizard();
+};
+A['action-duplicate'] = (el, opt) => {
   const a = getAction(el.dataset.id); if (!a) return;
   const campaignIds = (a.campaignIds || []).filter((id) => getCampaign(id));
-  if (!campaignIds.length) return toast('As campanhas desta ação não existem mais. Crie a ação do zero.', 'error');
+  if (!campaignIds.length) { toast('As campanhas desta ação não existem mais. Crie a ação do zero.', 'error'); return false; }
   const w = newWiz();
   w.type = a.type; w.campaignIds = campaignIds;
   campaignIds.forEach((id) => {
@@ -1418,8 +1441,9 @@ A['action-duplicate'] = (el) => {
   wiz = w;
   closeModal();
   location.hash = '#/acoes/nova';
-  toast('Ação copiada. Revise e confirme para enviar.' + (needFiles ? ' Anexe os arquivos de novo.' : '') + (!w.accountId ? ' Escolha a conta que vai executar.' : ''), 'success');
+  if (!(opt && opt.quiet)) toast('Ação copiada. Revise e confirme para enviar.' + (needFiles ? ' Anexe os arquivos de novo.' : '') + (!w.accountId ? ' Escolha a conta que vai executar.' : ''), 'success');
   if (location.hash === '#/acoes/nova') renderWizard();
+  return true;
 };
 A['action-cancel'] = async (el) => {
   const a = getAction(el.dataset.id); if (!a) return;
@@ -1482,14 +1506,25 @@ A['wiz-submit'] = async (btn) => {
   const label = btn.textContent;
   try {
     const action = buildAction(); const payload = { action };
+    const old = wiz.editId ? getAction(wiz.editId) : null;
+    if (wiz.editId && !wiz.oldCancelled && (!old || old.status !== 'agendada')) throw new Error('Esta ação já começou ou foi cancelada e não pode mais ser editada. Use Duplicar.');
     if (state.settings.mode === 'n8n') payload.files = await collectFiles(action, (n, p) => { btn.textContent = 'Enviando ' + (n.length > 22 ? n.slice(0, 20) + '...' : n) + ' ' + p + '%'; });
     btn.textContent = label;
+    if (payload.files) { const m = {}; Object.keys(payload.files).forEach((k) => { if (payload.files[k].mediaId) m[k] = payload.files[k]; }); if (Object.keys(m).length) action.media = m; }
+    if (old && !wiz.oldCancelled) {
+      /* cancela a antiga (mantendo os arquivos no servidor) antes de criar a nova, para nunca enviar duas vezes */
+      await API.call('actions/cancel', { id: old.id, keepMedia: true });
+      old.status = 'cancelada'; if (sims.has(old.id)) { clearInterval(sims.get(old.id)); sims.delete(old.id); }
+      wiz.oldCancelled = true; saveState();
+    }
     const res = await API.call('actions/run', payload);
     if (res.id) action.id = res.id; if (res.status) action.status = res.status;
-    state.actions.unshift(action); saveState();
+    if (old) { const i = state.actions.findIndex((x) => x.id === old.id); if (i >= 0) state.actions.splice(i, 1, action); else state.actions.unshift(action); }
+    else state.actions.unshift(action);
+    saveState();
     if (state.settings.mode === 'demo' && action.status === 'em andamento') startSim(action.id);
     const later = action.status === 'agendada';
-    wiz = null; toast(later ? 'Ação agendada' : 'Ação iniciada', 'success'); location.hash = '#/acoes';
+    wiz = null; toast(old ? (later ? 'Alterações salvas' : 'Ação iniciada') : later ? 'Ação agendada' : 'Ação iniciada', 'success'); location.hash = '#/acoes';
   } catch (e) { toast(e.message, 'error'); setBusy(btn, false); btn.textContent = label; }
 };
 
