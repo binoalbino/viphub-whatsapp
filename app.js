@@ -602,12 +602,12 @@ function viewCampanha(id) {
       <p class="muted" style="margin-bottom:6px">Quem entra pelo link vai para o primeiro grupo que ainda tem vaga (limite de ${GROUP_LIMIT}). Os próximos ficam de reserva.</p>
       <div class="queue-wrap">${queueHtml(c, false)}</div></div>
     ${c.groups.length ? `<div class="list" style="margin-bottom:18px"><div class="list-head row-groups"><span>Grupo</span><span>Capacidade</span><span>Situação</span><span>Mensagens</span><span></span></div>
-      ${gi.rows.map(({ g, st }) => `<div class="list-row row-groups">
+      ${gi.rows.map(({ g, st }, i) => `<div class="list-row row-groups">
         <div class="cell-main"><b>${esc(g.name)}</b><span class="trunc">${g.inviteLink ? '' : '<b style="color:var(--danger)">Sem link de convite.</b> '}${esc(g.description || 'Sem descrição')}</span></div>
         <div><span>${fmtInt(g.members)} de ${GROUP_LIMIT}</span><div class="progress"><i style="width:${Math.min(100, (g.members / GROUP_LIMIT) * 100)}%"></i></div></div>
         <div><span class="pill ${st === 'ativo' ? 'ok' : st === 'reserva' ? 'info' : 'dark'}">${st === 'ativo' ? 'Recebendo' : st === 'reserva' ? 'Reserva' : 'Lotado'}</span></div>
         <div><span class="pill ${g.adminsOnly ? 'warn' : 'off'}">${g.adminsOnly ? 'Só admins' : 'Todos'}</span></div>
-        <div class="row-end"><button class="btn sm" type="button" data-act="copy" data-copy="${esc(g.inviteLink)}">${icon('copy')} Copiar link</button></div></div>`).join('')}</div>` : ''}
+        <div class="row-end"><button class="btn sm" type="button" title="Entra antes na fila" data-act="group-move" data-id="${c.id}" data-gid="${esc(g.id)}" data-dir="-1" ${i === 0 ? 'disabled' : ''}>&uarr;</button><button class="btn sm" type="button" title="Entra depois na fila" data-act="group-move" data-id="${c.id}" data-gid="${esc(g.id)}" data-dir="1" ${i === gi.rows.length - 1 ? 'disabled' : ''}>&darr;</button><button class="btn sm" type="button" data-act="copy" data-copy="${esc(g.inviteLink)}">${icon('copy')} Copiar link</button></div></div>`).join('')}</div>` : ''}
     <div class="panel"><h4>Link de entrada</h4>
       <p class="muted" style="margin-bottom:10px">${state.settings.mode === 'n8n'
         ? 'Link inteligente: leva cada pessoa para o primeiro grupo com vaga e passa para o próximo quando lota. Divulgue este link (pode encurtar no TinyURL).'
@@ -1350,6 +1350,19 @@ A['groups-submit'] = async (btn) => {
     saveState(); closeModal(); toast(`${(res.groups || []).length} grupos criados`, 'success'); route();
     syncCampaign(c).catch(() => toast('Grupos criados, mas o link inteligente não foi atualizado. Abra a campanha de novo para tentar outra vez.', 'error'));
   } catch (e) { toast(e.message, 'error'); setBusy(btn, false); }
+};
+A['group-move'] = (btn) => {
+  const c = getCampaign(btn.dataset.id); if (!c) return;
+  const dir = Number(btn.dataset.dir) || 0;
+  const list = [...c.groups].sort((a, b) => a.n - b.n);
+  const from = list.findIndex((g) => g.id === btn.dataset.gid); const to = from + dir;
+  if (from < 0 || to < 0 || to >= list.length) return;
+  const ns = list.map((g) => g.n);
+  const [moved] = list.splice(from, 1); list.splice(to, 0, moved);
+  list.forEach((g, i) => { g.n = ns[i]; });
+  saveState(); route();
+  toast('Ordem alterada. ' + moved.name + ' agora é o ' + (to + 1) + 'º da fila. Para os nomes acompanharem a nova ordem, use a ação "Trocar nome".', 'success');
+  if (state.settings.mode === 'n8n') syncCampaign(c).catch(() => toast('Não consegui avisar o n8n da nova ordem. Abra a campanha de novo para tentar outra vez.', 'error'));
 };
 A['groups-sync'] = async (btn) => {
   const c = getCampaign(btn.dataset.id); if (!c || !c.groups.length) return;
