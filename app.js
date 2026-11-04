@@ -215,7 +215,7 @@ function emptyState(ic, title, text, cta = '') {
 const demoScans = {};
 const Mock = {
   async ping() { await sleep(250); return { ok: true }; },
-  async 'accounts/connect'({ instance }) { await sleep(700); return { code: uid('qr') + instance, qr: null }; },
+  async 'accounts/connect'({ instance, number }) { await sleep(700); return number ? { pairingCode: 'DEMO1234', code: null, qr: null } : { code: uid('qr') + instance, qr: null }; },
   async 'accounts/status'({ instance }) {
     await sleep(150);
     if (demoScans[instance]) return { state: 'open', number: demoScans[instance] };
@@ -386,6 +386,9 @@ function viewContas() {
 }
 
 let qrState = null;
+/* número usado para conectar por código (vazio = QR Code) */
+let connNumber = '';
+const connectPayload = (acc) => Object.assign({ instance: acc.instance, name: acc.name }, connNumber ? { number: connNumber } : {});
 function stopQr() { if (qrState) { clearInterval(qrState.poll); clearInterval(qrState.countdown); qrState = null; } }
 function drawFakeQR(canvas, seedStr) {
   const ctx = canvas && canvas.getContext && canvas.getContext('2d'); if (!ctx) return;
@@ -411,16 +414,23 @@ function openConnectModal(accountId) {
     body: `<div id="conn-form">
         <p class="lead">Dê um nome para identificar este número no painel. Em seguida, leia o QR Code como no WhatsApp Web.</p>
         <label class="field"><span>Nome da conta</span><input id="conn-name" type="text" placeholder="Ex.: Atendimento Clush" value="${esc(acc ? acc.name : '')}" ${acc ? 'readonly' : ''}></label>
+        <label class="field"><span>Como conectar</span><select id="conn-method"><option value="qr">QR Code</option><option value="code">Código de 8 caracteres (sem câmera)</option></select></label>
+        <label class="field" id="conn-phone-wrap" hidden><span>Número do WhatsApp (com DDD)</span><input id="conn-phone" type="text" inputmode="tel" placeholder="(47) 99999-0000"><small>O número que vai ser conectado. O WhatsApp mostra um código no painel, que você digita no celular.</small></label>
         <label class="field"><span>Instância</span><input id="conn-instance" type="text" placeholder="clush-atendimento" value="${esc(acc ? acc.instance : '')}" ${acc ? 'readonly' : ''}><small>Identificador único, sem espaços. É o nome da instância na Evolution API.${instancePrefix() ? ` Começa sempre com <b>${esc(instancePrefix())}</b> (identifica a sua conta).` : ''}</small></label>
       </div>
       <div id="conn-qr" hidden>
         <div class="qr-wrap">
           <div class="qr-box" id="qr-box"></div>
           <div>
-            <ol class="qr-steps">
+            <ol class="qr-steps" id="steps-qr">
               <li>Abra o WhatsApp no celular.</li>
               <li>Toque em <b>Aparelhos conectados</b> e depois em <b>Conectar um aparelho</b>.</li>
               <li>Aponte a câmera para este QR Code.</li>
+            </ol>
+            <ol class="qr-steps" id="steps-code" hidden>
+              <li>Abra o WhatsApp no celular.</li>
+              <li>Toque em <b>Aparelhos conectados</b>, depois em <b>Conectar um aparelho</b>.</li>
+              <li>Escolha <b>Conectar com número de telefone</b> e digite o código mostrado ao lado.</li>
             </ol>
             <p class="muted" style="margin-top:12px">O código é renovado em <b id="qr-timer">60</b> segundos.</p>
             <button class="btn sm" type="button" data-act="conn-simulate" id="conn-sim" hidden style="margin-top:12px">Simular leitura do QR Code</button>
@@ -429,6 +439,8 @@ function openConnectModal(accountId) {
       </div>`,
     footer: `<button class="btn" type="button" data-act="modal-close">Cancelar</button><button class="btn primary" type="button" id="conn-go" data-act="conn-generate" data-id="${acc ? acc.id : ''}">Gerar QR Code</button>`,
     onMount: () => {
+      const meth = $('#conn-method'); const go = $('#conn-go');
+      meth.addEventListener('change', () => { const code = meth.value === 'code'; $('#conn-phone-wrap').hidden = !code; go.textContent = code ? 'Gerar código' : 'Gerar QR Code'; });
       if (acc) return;
       const n = $('#conn-name'); const i = $('#conn-instance'); let touched = false;
       i.addEventListener('input', () => { touched = true; });
@@ -438,36 +450,42 @@ function openConnectModal(accountId) {
   });
 }
 async function showQr(acc) {
-  const res = await API.call('accounts/connect', { instance: acc.instance, name: acc.name });
+  const res = await API.call('accounts/connect', connectPayload(acc));
   $('#conn-form').hidden = true; $('#conn-qr').hidden = false; $('#conn-go').hidden = true;
+  $('#steps-qr').hidden = !!connNumber; $('#steps-code').hidden = !connNumber;
   paintQr(res, acc);
   if (state.settings.mode === 'demo') $('#conn-sim').hidden = false;
   startQrLoop(acc);
 }
 function paintQr(res, acc, tries = 0) {
   const box = $('#qr-box'); if (!box) return;
-  const img = res.qr || res.base64;
+  if (connNumber && res.pairingCode) {
+    const c = String(res.pairingCode).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    box.innerHTML = `<div class="pair-code" aria-label="Código de conexão">${esc(c.length === 8 ? c.slice(0, 4) + '-' + c.slice(4) : c)}</div>`; return;
+  }
+  const img = connNumber ? null : (res.qr || res.base64);
   if (img) { box.innerHTML = `<img src="${esc(img)}" alt="QR Code para conectar o WhatsApp">`; return; }
   if (state.settings.mode === 'n8n') {
     /* a Evolution API leva alguns segundos para gerar o QR: tenta de novo em vez de mostrar um código falso */
-    box.innerHTML = '<p class="muted" style="text-align:center;padding:12px">Gerando o QR Code, aguarde alguns segundos...</p>';
+    box.innerHTML = `<p class="muted" style="text-align:center;padding:12px">${connNumber ? 'Gerando o código' : 'Gerando o QR Code'}, aguarde alguns segundos...</p>`;
     if (tries < 8) {
       setTimeout(async () => {
         if (!qrState || qrState.acc !== acc || !$('#qr-box')) return;
-        try { paintQr(await API.call('accounts/connect', { instance: acc.instance, name: acc.name }), acc, tries + 1); } catch (e) { /* tenta de novo */ }
+        try { paintQr(await API.call('accounts/connect', connectPayload(acc)), acc, tries + 1); } catch (e) { /* tenta de novo */ }
       }, 3000);
-    } else box.innerHTML = '<p class="muted" style="text-align:center;padding:12px">Não veio o QR Code. Feche e tente de novo.</p>';
+    } else box.innerHTML = `<p class="muted" style="text-align:center;padding:12px">Não veio ${connNumber ? 'o código' : 'o QR Code'}. Feche e tente de novo.</p>`;
     return;
   }
   box.innerHTML = '<canvas id="qr-canvas" aria-label="QR Code de demonstração"></canvas>'; drawFakeQR($('#qr-canvas'), res.code || acc.instance);
 }
 function startQrLoop(acc) {
-  stopQr(); let left = 60; qrState = { acc };
+  stopQr(); const period = connNumber ? 120 : 60; let left = period; qrState = { acc };
+  const tm = $('#qr-timer'); if (tm) tm.textContent = left;
   qrState.countdown = setInterval(async () => {
     left--; const t = $('#qr-timer'); if (t) t.textContent = left;
     if (left <= 0) {
-      left = 60;
-      try { const res = await API.call('accounts/connect', { instance: acc.instance, name: acc.name }); paintQr(res, acc); } catch (e) { /* tenta no próximo ciclo */ }
+      left = period;
+      try { const res = await API.call('accounts/connect', connectPayload(acc)); paintQr(res, acc); } catch (e) { /* tenta no próximo ciclo */ }
     }
   }, 1000);
   qrState.poll = setInterval(() => pollAccount(acc), 3000);
@@ -1125,7 +1143,7 @@ const API_DOCS = [
   { path: 'groups/import', desc: 'Lê o link de convite dos grupos escolhidos. Link vazio quando a conta não é administradora.', req: { instance: 'clush-atendimento', groupIds: ['1203...@g.us'] }, res: { links: [{ id: '1203...@g.us', inviteLink: 'https://chat.whatsapp.com/...' }] } },
   { path: 'state/load', desc: 'Devolve os dados do painel (contas, campanhas, ações) guardados para o cliente.', req: {}, res: { state: { accounts: [], campaigns: [], actions: [] }, updatedAt: 1700000000000 } },
   { path: 'state/save', desc: 'Guarda os dados do painel do cliente (limite de 2 MB).', req: { state: { accounts: [], campaigns: [], actions: [] } }, res: { ok: true } },
-  { path: 'accounts/connect', desc: 'Cria a instância (se não existir) e devolve o QR Code.', req: { instance: 'clush-atendimento', name: 'Atendimento Clush' }, res: { qr: 'data:image/png;base64,...' } },
+  { path: 'accounts/connect', desc: 'Cria a instância (se não existir) e devolve o QR Code.', req: { instance: 'clush-atendimento', name: 'Atendimento Clush', number: '5547999990000 (opcional: conecta por código em vez de QR)' }, res: { qr: 'data:image/png;base64,...', pairingCode: 'ABCD1234 (só quando number foi enviado)' } },
   { path: 'accounts/status', desc: 'Consulta o estado da conexão. O painel consulta a cada 3 segundos.', req: { instance: 'clush-atendimento' }, res: { state: 'open', number: '5547999999999' } },
   { path: 'accounts/logout', desc: 'Desconecta o número (mantém a instância).', req: { instance: 'clush-atendimento' }, res: { ok: true } },
   { path: 'accounts/delete', desc: 'Remove a instância.', req: { instance: 'clush-atendimento' }, res: { ok: true } },
@@ -1181,6 +1199,12 @@ A['conn-generate'] = async (btn) => {
   if (!name) return toast('Informe o nome da conta', 'error');
   if (!instance) return toast('Informe a instância', 'error');
   if (!btn.dataset.id && state.accounts.some((a) => a.instance === instance)) return toast('Já existe uma conta com essa instância', 'error');
+  connNumber = '';
+  if ($('#conn-method').value === 'code') {
+    const ph = parseNumbers($('#conn-phone').value);
+    if (ph.valid.length !== 1) return toast('Informe o número do WhatsApp com DDD, por exemplo (47) 99999-0000', 'error');
+    connNumber = ph.valid[0];
+  }
   setBusy(btn, true);
   try {
     let acc = btn.dataset.id ? getAccount(btn.dataset.id) : null;
