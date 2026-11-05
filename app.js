@@ -247,6 +247,19 @@ const Mock = {
   async 'actions/run'({ action }) { await sleep(600); return { id: action.id, status: action.scheduledAt ? 'agendada' : 'em andamento' }; },
   async 'actions/status'() { return { actions: [] }; },
   async 'actions/cancel'() { await sleep(300); return { ok: true }; },
+  async 'messages/info'({ id }) {
+    await sleep(400);
+    const a = state.actions.find((x) => x.id === id); const sent = []; const data = {};
+    const people = [['5547999990001', 'Ana'], ['5547988880002', 'Bia'], ['5547977770003', 'Carla'], ['5511966660004', 'Dani'], ['5521955550005', 'Elisa']];
+    if (a && a.type === 'send_message') {
+      (a.groups || []).forEach((g, gi) => (a.content.items || []).forEach((it, ii) => {
+        const mid = 'DEMO' + gi + '_' + ii; sent.push({ id: mid, g: g.id, i: it.id });
+        const rs = people.slice(0, 2 + ((gi + ii) % 3)).map((p, k) => ({ jid: p[0] + '@s.whatsapp.net', emoji: ['👍', '❤️', '🔥'][k % 3], name: p[1], t: Date.now() - k * 60000 }));
+        data[mid] = { reactions: rs, poll: it.kind === 'poll' ? (it.options || []).filter(Boolean).map((o, k) => ({ name: o, voters: people.slice(0, (k + gi) % 3 + 1).map((p) => p[0] + '@s.whatsapp.net') })) : null, read: [], readCount: 40 + gi * 3, deliveredCount: 90 + gi * 5 };
+      }));
+    }
+    return { sent, data, stats: { received: sent.length * 3, since: Date.now() - 3600000, last: Date.now() } };
+  },
 };
 async function http(endpoint, payload) {
   const base = String(state.settings.baseUrl || '').replace(/\/+$/, '');
@@ -873,6 +886,60 @@ async function pollRemote() {
 }
 
 let openActionId = null;
+/* ---------- resultados: reações, votos de enquete e leituras ---------- */
+const resultsCache = {};
+const personLabel = (jid, name) => {
+  const phone = /@s\.whatsapp\.net$/.test(jid || '') ? fmtPhone(jid) : '';
+  if (phone && name) return name + ' (' + phone + ')';
+  return phone || name || 'Contato com número oculto';
+};
+function resultsRows(a) {
+  const rc = resultsCache[a.id]; if (!rc) return null;
+  const gname = {}; (a.groups || []).forEach((g) => { gname[g.id] = g.name; });
+  const items = (a.content.items || []).map((it, idx) => {
+    const msgs = rc.sent.filter((x) => x.i === it.id);
+    const row = { it, idx, groups: msgs.length, reactions: [], votes: [], poll: null, readCount: 0, deliveredCount: 0 };
+    msgs.forEach((m) => {
+      const d = rc.data[m.id] || {};
+      (d.reactions || []).forEach((r) => row.reactions.push({ jid: r.jid, name: r.name, emoji: r.emoji, group: gname[m.g] || m.g }));
+      row.readCount += d.readCount || 0; row.deliveredCount += d.deliveredCount || 0;
+      if (d.poll) {
+        row.poll = row.poll || {};
+        d.poll.forEach((o) => { row.poll[o.name] = row.poll[o.name] || []; (o.voters || []).forEach((v) => { row.poll[o.name].push({ jid: v, group: gname[m.g] || m.g }); row.votes.push({ jid: v, option: o.name, group: gname[m.g] || m.g }); }); });
+      }
+    });
+    return row;
+  });
+  return { items, stats: rc.stats, at: rc.at };
+}
+function resultsHtml(a) {
+  if (a.type !== 'send_message') return '';
+  const head = `<div class="preview-title" style="margin-top:18px;display:flex;align-items:center;gap:10px">Reações, votos e leituras
+    <button class="btn sm" type="button" style="margin-left:auto" data-act="action-results" data-id="${a.id}">${resultsCache[a.id] ? 'Atualizar' : 'Ver resultados'}</button>
+    ${resultsCache[a.id] ? `<button class="btn sm" type="button" data-act="action-results-csv" data-id="${a.id}">Baixar lista (CSV)</button>` : ''}</div>`;
+  const R = resultsRows(a);
+  if (!R) return head + '<p class="muted">Veja quem reagiu e quem votou em cada mensagem desta ação.</p>';
+  const warn = !R.stats || !R.stats.received
+    ? `<div class="callout">${icon('alert')}<p>Ainda não chegou nenhum evento da Evolution. Para guardar reações e votos, o webhook precisa estar configurado (veja o guia). Só mensagens enviadas depois disso são contadas.</p></div>` : '';
+  const none = !R.items.some((r) => r.groups) ? '<p class="muted">Nenhuma mensagem desta ação foi registrada. Só ações enviadas depois da atualização guardam os dados.</p>' : '';
+  const people = (list, withEmoji) => list.length ? `<details style="margin-top:6px"><summary>Ver pessoas (${list.length})</summary><div class="log" style="max-height:220px">${list.map((p) => `<div>${withEmoji ? esc(p.emoji) + ' ' : ''}${esc(personLabel(p.jid, p.name))} <span class="muted">${esc(p.group)}${p.option ? ' · ' + esc(p.option) : ''}</span></div>`).join('')}</div></details>` : '';
+  const cards = R.items.filter((r) => r.groups).map((r) => {
+    const k = KINDS[r.it.kind] || { label: r.it.kind };
+    const title = esc(k.label) + (r.it.text || r.it.caption || r.it.question ? ': ' + esc(String(r.it.text || r.it.caption || r.it.question).slice(0, 60)) : '');
+    const counts = {}; r.reactions.forEach((x) => { counts[x.emoji] = (counts[x.emoji] || 0) + 1; });
+    let body = `<p style="margin:6px 0"><b>${r.reactions.length}</b> ${r.reactions.length === 1 ? 'reação' : 'reações'} ${Object.keys(counts).map((e) => `<span class="pill off" style="margin-left:4px">${esc(e)} ${counts[e]}</span>`).join('')}</p>${people(r.reactions, true)}`;
+    if (r.poll) {
+      const opts = Object.keys(r.poll); const total = opts.reduce((s, o) => s + r.poll[o].length, 0);
+      body += `<div style="margin:10px 0 4px"><b>${total}</b> ${total === 1 ? 'voto' : 'votos'}</div>` + opts.map((o) => {
+        const n = r.poll[o].length; const pct = total ? Math.round((n / total) * 100) : 0;
+        return `<div style="margin:6px 0"><div style="display:flex;justify-content:space-between"><span>${esc(o)}</span><span>${n} (${pct}%)</span></div><div class="progress"><i style="width:${pct}%"></i></div>${people(r.poll[o].map((v) => ({ jid: v.jid, name: '', group: v.group })), false)}</div>`;
+      }).join('');
+    } else if (r.it.kind === 'poll') body += '<p class="muted" style="margin:6px 0">Nenhum voto registrado ainda.</p>';
+    body += `<p class="muted" style="margin:8px 0 0">Entregue a ${fmtInt(r.deliveredCount)} e lida por ${fmtInt(r.readCount)} (${r.groups} ${r.groups === 1 ? 'grupo' : 'grupos'})</p>`;
+    return `<div class="panel" style="margin:10px 0"><b>${title}</b>${body}</div>`;
+  }).join('');
+  return head + warn + none + cards + `<p class="muted" style="font-size:12px">A lista de quem leu só existe quando o WhatsApp informa: só vale para quem deixa a confirmação de leitura ligada e, em grupos grandes, o WhatsApp geralmente nem envia essa informação. Reações e votos são completos a partir do momento em que o webhook foi ligado. ${R.at ? 'Atualizado às ' + fmtTime(R.at) + '.' : ''}</p>`;
+}
 function actionDetailHtml(a) {
   const t = ACTION_TYPES[a.type] || { label: a.type };
   const pct = a.progress && a.progress.total ? Math.round((a.progress.done / a.progress.total) * 100) : 0;
@@ -884,6 +951,7 @@ function actionDetailHtml(a) {
       <dt>Grupos</dt><dd>${a.groupCount}</dd>
       <dt>${a.scheduledAt ? 'Agendada para' : 'Criada em'}</dt><dd>${fmtDate(a.scheduledAt || a.createdAt)}</dd></dl>
     <div class="preview-title">${esc(t.label)}</div>${previewHtml(a.type, a.content, targets)}
+    ${resultsHtml(a)}
     <div class="preview-title" style="margin-top:18px">Registro</div>
     <div class="log">${a.log && a.log.length ? a.log.slice(-40).map((l) => `<div><time>${fmtTime(l.t)}</time>${esc(l.text)}</div>`).join('') : '<div>Ainda sem registros.</div>'}</div>`;
 }
@@ -1190,6 +1258,7 @@ const API_DOCS = [
   { path: 'groups/sync', desc: 'Conta os participantes de cada grupo (botão "Atualizar participantes" na campanha).', req: { instance: 'clush-atendimento', groupIds: ['1203...@g.us'] }, res: { groups: [{ id: '1203...@g.us', members: 412 }] } },
   { path: 'actions/run', desc: 'Recebe a ação completa (conteúdo, grupos, velocidade, agendamento). Se scheduledAt vier preenchido, o n8n agenda.', req: { action: { id: 'act_x', type: 'send_message', instance: 'clush-atendimento', groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1' }], content: { items: [{ id: 'it_x', kind: 'image', caption: 'Olá!', fileName: 'foto.jpg' }], mentionAll: false, pin: false, speed: { mode: 'normal', min: 15, max: 30 }, numbersList: [] }, scheduledAt: null }, files: { it_x: { name: 'foto.jpg', type: 'image/jpeg', base64: '...' } } }, res: { id: 'act_x', status: 'em andamento' } },
   { path: 'actions/status', desc: 'Progresso das ações abertas. O painel consulta a cada 5 segundos. Em "links" vão os novos links de convite (ação de atualizar links).', req: { ids: ['act_x'] }, res: { actions: [{ id: 'act_x', status: 'concluída', progress: { done: 4, total: 4 }, log: [{ t: 1760000000000, text: 'Bruno VIP #1: Texto enviado' }], links: { '1203...@g.us': 'https://chat.whatsapp.com/...' } }] } },
+  { path: 'messages/info', desc: 'Devolve as reações, votos de enquete e leituras das mensagens de uma ação (dados capturados pelo webhook da Evolution).', req: { id: 'act_x' }, res: { sent: [{ id: 'WAID', g: '1203...@g.us', i: 'it_x' }], data: { WAID: { reactions: [{ jid: '5547...@s.whatsapp.net', emoji: '👍', name: 'Ana' }], poll: [{ name: 'Opção A', voters: ['5547...@s.whatsapp.net'] }], readCount: 0, deliveredCount: 0 } }, stats: { received: 10 } } },
   { path: 'actions/cancel', desc: 'Cancela uma ação agendada ou em andamento e apaga os arquivos dela do servidor de arquivos. Com keepMedia: true os arquivos ficam (usado ao editar uma ação agendada).', req: { id: 'act_x', keepMedia: false }, res: { ok: true } },
 ];
 function viewConfig() {
@@ -1392,6 +1461,29 @@ A['sim-joins'] = (el) => {
 A['new-action'] = () => { wiz = newWiz(); location.hash = '#/acoes/nova'; };
 A['action-filter'] = (el) => { actionsFilter = el.dataset.f; viewAcoes(); };
 A['action-open'] = (el) => openActionModal(el.dataset.id);
+A['action-results'] = async (btn) => {
+  const a = getAction(btn.dataset.id); if (!a) return;
+  setBusy(btn, true);
+  try {
+    const r = await API.call('messages/info', { id: a.id });
+    resultsCache[a.id] = { sent: r.sent || [], data: r.data || {}, stats: r.stats || null, at: Date.now() };
+    refreshActionModal();
+  } catch (e) { toast(e.message, 'error'); setBusy(btn, false); }
+};
+A['action-results-csv'] = (btn) => {
+  const a = getAction(btn.dataset.id); const R = a && resultsRows(a); if (!R) return;
+  const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const rows = [['tipo', 'mensagem', 'grupo', 'pessoa', 'telefone', 'resposta']];
+  R.items.forEach((r) => {
+    const msg = (KINDS[r.it.kind] || { label: r.it.kind }).label + ' ' + (r.idx + 1);
+    const tel = (jid) => (/@s\.whatsapp\.net$/.test(jid || '') ? String(jid).replace(/\D/g, '') : '');
+    r.reactions.forEach((x) => rows.push(['reação', msg, x.group, x.name || '', tel(x.jid), x.emoji]));
+    r.votes.forEach((x) => rows.push(['voto', msg, x.group, '', tel(x.jid), x.option]));
+  });
+  const csv = '\ufeff' + rows.map((r) => r.map(q).join(';')).join('\n');
+  const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  link.download = 'resultados-' + a.id + '.csv'; link.click();
+};
 /* duplicar: abre o assistente já preenchido com os dados da ação, sem enviar nada */
 A['action-edit'] = (el) => {
   const a = getAction(el.dataset.id); if (!a) return;
