@@ -9,6 +9,7 @@
    ===================================================================== */
 
 const GROUP_LIMIT = 800;
+const APP_VERSION = '2026-11-05 17:50';
 const STORAGE_KEY = 'viphub.v1';
 
 /* ---------- helpers ---------- */
@@ -1104,7 +1105,8 @@ function itemEditor(it, i) {
     case 'file': body = filePick('*/*', 'Escolher arquivo'); break;
     case 'button': body = `<label class="field"><span>Texto da mensagem</span><textarea rows="3" data-model="${m('text')}">${esc(it.text)}</textarea></label>
       <div class="row"><label class="field"><span>Texto do botão</span><input type="text" maxlength="25" data-model="${m('label')}" value="${esc(it.label)}" placeholder="Ver ofertas"></label>
-      <label class="field"><span>Link do botão</span><input type="url" data-model="${m('url')}" value="${esc(it.url)}" placeholder="https://"></label></div>`; break;
+      <label class="field"><span>Link do botão</span><input type="url" data-model="${m('url')}" value="${esc(it.url)}" placeholder="https://"></label></div>
+      <div class="switch-row"><div><b>Mostrar prévia do link</b><small>Quando a mensagem tem um link, o WhatsApp mostra o cartão com imagem e título. Desligado, vai só o texto.</small></div><label class="switch"><input type="checkbox" data-model="${m('linkPreview')}" ${it.linkPreview ? 'checked' : ''}><span class="slider"></span></label></div>`; break;
     case 'poll': body = `<label class="field"><span>Pergunta</span><input type="text" data-model="${m('question')}" value="${esc(it.question)}"></label>
       <div class="field"><span>Opções</span>${it.options.map((o, j) => `<div class="opt-row"><input type="text" data-model="${m('options.' + j)}" value="${esc(o)}" placeholder="Opção ${j + 1}"><button type="button" class="icon-btn danger" data-act="wiz-poll-del" data-i="${i}" data-j="${j}" aria-label="Remover opção">${icon('x')}</button></div>`).join('')}
       ${it.options.length < 12 ? `<button type="button" class="btn sm" data-act="wiz-poll-add" data-i="${i}">${icon('plus')} Adicionar opção</button>` : ''}</div>
@@ -1268,7 +1270,7 @@ function viewConfig() {
   $('#view').innerHTML = `<div class="panel"><h3>Conexão com o backend</h3><p class="lead">Em modo demonstração nada é enviado de verdade. Em modo n8n, cada ação chama um webhook seu.</p>
       <div class="row"><label class="field"><span>Modo</span><select id="cfg-mode"><option value="demo" ${s.mode === 'demo' ? 'selected' : ''}>Demonstração</option><option value="n8n" ${s.mode === 'n8n' ? 'selected' : ''}>n8n</option></select></label>
       <label class="field"><span>URL base dos webhooks</span><input id="cfg-url" type="text" value="${esc(s.baseUrl)}" placeholder="https://n8n.seudominio.com/webhook/viphub"></label></div>
-      <label class="field"><span>Servidor de arquivos (opcional)</span><input id="cfg-media" type="text" value="${esc(s.mediaUrl || '')}" placeholder="https://midia.seudominio.com"><small>Para enviar vídeos e arquivos grandes (até 100 MB). O arquivo sobe para o seu servidor, é enviado aos grupos e apagado depois. Em branco, o limite é 12 MB.</small></label>
+      <label class="field"><span>Servidor de arquivos (opcional) · versão do painel ${APP_VERSION}</span><input id="cfg-media" type="text" value="${esc(s.mediaUrl || '')}" placeholder="https://midia.seudominio.com"><small>Para enviar vídeos e arquivos grandes (até 100 MB). O arquivo sobe para o seu servidor, é enviado aos grupos e apagado depois. Em branco, o limite é 12 MB.</small></label>
       <label class="field"><span>Senha de acesso</span><input id="cfg-token" type="password" autocomplete="off" value="${esc(s.token)}" placeholder="A senha que você recebeu"><small>Identifica o seu cliente no n8n e é enviada no cabeçalho Authorization. ${s.client ? 'Conectado como <b>' + esc(s.client.name) + '</b>.' : ''}</small></label>
       <div style="display:flex;gap:8px"><button class="btn primary" type="button" data-act="cfg-save">Salvar</button><button class="btn" type="button" data-act="cfg-test">Testar conexão</button></div></div>
     <div class="panel"><h3>Dados do painel</h3><p class="lead">${s.mode === 'n8n' ? 'No modo n8n ficam guardados no servidor, na sua conta, e aparecem em qualquer aparelho. Este navegador mantém só uma cópia.' : 'Ficam guardados neste navegador.'}</p>
