@@ -935,10 +935,11 @@ function resultsHtml(a) {
         return `<div style="margin:6px 0"><div style="display:flex;justify-content:space-between"><span>${esc(o)}</span><span>${n} (${pct}%)</span></div><div class="progress"><i style="width:${pct}%"></i></div>${people(r.poll[o].map((v) => ({ jid: v.jid, name: '', group: v.group })), false)}</div>`;
       }).join('');
     } else if (r.it.kind === 'poll') body += '<p class="muted" style="margin:6px 0">Nenhum voto registrado ainda.</p>';
-    body += `<p class="muted" style="margin:8px 0 0">Entregue a ${fmtInt(r.deliveredCount)} e lida por ${fmtInt(r.readCount)} (${r.groups} ${r.groups === 1 ? 'grupo' : 'grupos'})</p>`;
+    if (r.deliveredCount || r.readCount) body += `<p class="muted" style="margin:8px 0 0">Entregue a ${fmtInt(r.deliveredCount)} e lida por ${fmtInt(r.readCount)} (${r.groups} ${r.groups === 1 ? 'grupo' : 'grupos'})</p>`;
+    else body += `<p class="muted" style="margin:8px 0 0">Enviada em ${r.groups} ${r.groups === 1 ? 'grupo' : 'grupos'}. O WhatsApp não informa quem leu mensagens de grupo.</p>`;
     return `<div class="panel" style="margin:10px 0"><b>${title}</b>${body}</div>`;
   }).join('');
-  return head + warn + none + cards + `<p class="muted" style="font-size:12px">A lista de quem leu só existe quando o WhatsApp informa: só vale para quem deixa a confirmação de leitura ligada e, em grupos grandes, o WhatsApp geralmente nem envia essa informação. Reações e votos são completos a partir do momento em que o webhook foi ligado. ${R.at ? 'Atualizado às ' + fmtTime(R.at) + '.' : ''}</p>`;
+  return head + warn + none + cards + `<p class="muted" style="font-size:12px">O WhatsApp não informa quem leu mensagens de grupo, por isso não há lista de leitura. Reações e votos são contados desde que o webhook foi ligado. ${R.at ? 'Atualizado às ' + fmtTime(R.at) + '.' : ''}</p>`;
 }
 function actionDetailHtml(a) {
   const t = ACTION_TYPES[a.type] || { label: a.type };
@@ -1095,7 +1096,8 @@ function itemEditor(it, i) {
   const filePick = (accept, label) => `<label class="file-pick ${it.fileName ? 'has' : ''}">${icon(k.icon)}<span>${it.fileName ? esc(it.fileName) + (it.fileSize ? ` (${fmtSize(it.fileSize)})` : '') : label}</span><input type="file" accept="${accept}" data-file="${it.id}" data-kind="${it.kind}"></label>`;
   let body = '';
   switch (it.kind) {
-    case 'text': body = `<label class="field"><span>Mensagem</span><textarea rows="4" data-model="${m('text')}" placeholder="Escreva a mensagem. Use *negrito*, _itálico_ e ~riscado~.">${esc(it.text)}</textarea></label>`; break;
+    case 'text': body = `<label class="field"><span>Mensagem</span><textarea rows="4" data-model="${m('text')}" placeholder="Escreva a mensagem. Use *negrito*, _itálico_ e ~riscado~.">${esc(it.text)}</textarea></label>
+      <div class="switch-row"><div><b>Mostrar prévia do link</b><small>Quando a mensagem tem um link, o WhatsApp mostra o cartão com imagem e título. Desligado, vai só o texto.</small></div><label class="switch"><input type="checkbox" data-model="${m('linkPreview')}" ${it.linkPreview ? 'checked' : ''}><span class="slider"></span></label></div>`; break;
     case 'image': body = `${filePick('image/*', 'Escolher imagem')}<label class="field"><span>Legenda (opcional)</span><textarea rows="3" data-model="${m('caption')}">${esc(it.caption)}</textarea></label>`; break;
     case 'video': body = `${filePick('video/*', 'Escolher vídeo (mp4)')}<label class="field"><span>Legenda (opcional)</span><textarea rows="3" data-model="${m('caption')}">${esc(it.caption)}</textarea></label>`; break;
     case 'audio': body = `${filePick('.ogg,audio/ogg', 'Escolher áudio .ogg')}<small>Use arquivos .ogg com codec opus para o áudio aparecer como mensagem de voz.</small>`; break;
@@ -1574,7 +1576,7 @@ A['wiz-target-group'] = (el) => {
 };
 A['wiz-add-item'] = (el) => {
   const kind = el.dataset.kind; const base = { id: uid('it'), kind };
-  const defaults = { text: { text: '' }, image: { caption: '', fileName: '' }, video: { caption: '', fileName: '' }, audio: { fileName: '' }, file: { fileName: '' }, button: { text: '', label: '', url: '' }, poll: { question: '', options: ['', ''], multiple: false } };
+  const defaults = { text: { text: '', linkPreview: false }, image: { caption: '', fileName: '' }, video: { caption: '', fileName: '' }, audio: { fileName: '' }, file: { fileName: '' }, button: { text: '', label: '', url: '', linkPreview: false }, poll: { question: '', options: ['', ''], multiple: false } };
   wiz.content.items.push(Object.assign(base, defaults[kind])); renderWizard();
 };
 A['wiz-item-up'] = (el) => { const i = Number(el.dataset.i); const a = wiz.content.items; if (i > 0) { [a[i - 1], a[i]] = [a[i], a[i - 1]]; renderWizard(); } };
