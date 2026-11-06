@@ -248,6 +248,13 @@ const Mock = {
   async 'actions/run'({ action }) { await sleep(600); return { id: action.id, status: action.scheduledAt ? 'agendada' : 'em andamento' }; },
   async 'actions/status'() { return { actions: [] }; },
   async 'actions/cancel'() { await sleep(300); return { ok: true }; },
+  async 'groups/export'({ groups }) {
+    await sleep(500);
+    const names = ['Ana Souza', 'Bia Lima', '', 'Dani Rocha', '', 'Fabi Alves'];
+    const rows = [];
+    (groups || []).forEach((g, gi) => names.forEach((n, i) => rows.push({ group: g.name, number: i === 4 ? '' : '55479999' + String(1000 + gi * 10 + i), name: n })));
+    return { rows, failed: [], hidden: (groups || []).length };
+  },
   async 'messages/info'({ id }) {
     await sleep(400);
     const a = state.actions.find((x) => x.id === id); const sent = []; const data = {};
@@ -337,6 +344,7 @@ const ACTION_TYPES = {
   remove_admin: { label: 'Remover ADM', icon: 'userMinus', desc: 'Rebaixa administradores para participantes.' },
   remove_participants: { label: 'Remover participantes', icon: 'users', desc: 'Tira números específicos dos grupos.' },
   update_links: { label: 'Atualizar links dos grupos', icon: 'link', desc: 'Gera novos links de convite e invalida os antigos.' },
+  edit_message: { label: 'Editar mensagem enviada', icon: 'edit', desc: '', hidden: true },
 };
 const KINDS = {
   text: { label: 'Texto', icon: 'type' },
@@ -599,6 +607,7 @@ function viewCampanha(id) {
   if (!c) { v.innerHTML = emptyState('layers', 'Campanha não encontrada', 'Ela pode ter sido excluída.', '<a class="btn primary" href="#/campanhas">Voltar para campanhas</a>'); return; }
   $('#page-title').textContent = c.name;
   $('#page-actions').innerHTML = `<button class="btn" type="button" data-act="campaign-action" data-id="${c.id}">${icon('zap')} Nova ação</button>
+    <button class="btn" type="button" data-act="leads-export" data-id="${c.id}">${icon('down')} Exportar leads</button>
     <button class="btn" type="button" data-act="import-open" data-id="${c.id}">${icon('layers')} Importar grupos</button>
     <button class="btn primary" type="button" data-act="groups-open" data-id="${c.id}">${icon('plus')} Criar grupos</button>`;
   const gi = groupInfo(c); const total = c.groups.reduce((s, g) => s + g.members, 0);
@@ -798,7 +807,7 @@ function resolveTargets(a) {
 const unitsPer = (type, content) => (type === 'send_message' ? Math.max(1, (content.items || []).length) : 1);
 function describeUnit(a, idx) {
   if (a.type === 'send_message') { const it = a.content.items[idx]; return it ? `${KINDS[it.kind].label} enviado` : 'mensagem enviada'; }
-  return { rename: 'nome alterado', description: 'descrição alterada', image: 'imagem alterada', settings: 'configuração alterada', add_admin: 'admins adicionados', remove_admin: 'admins removidos', remove_participants: 'participantes removidos', update_links: 'novo link gerado' }[a.type] || 'feito';
+  return { rename: 'nome alterado', description: 'descrição alterada', image: 'imagem alterada', settings: 'configuração alterada', add_admin: 'admins adicionados', remove_admin: 'admins removidos', remove_participants: 'participantes removidos', update_links: 'novo link gerado', edit_message: 'mensagem editada' }[a.type] || 'feito';
 }
 const sims = new Map();
 function startSim(id) {
@@ -963,6 +972,7 @@ function openActionModal(id) {
   openModal({
     title: (ACTION_TYPES[a.type] || { label: 'Ação' }).label, size: 'lg', body: actionDetailHtml(a),
     footer: `<button class="btn danger sm" type="button" data-act="action-delete" data-id="${a.id}">${icon('trash')} Excluir</button>
+      ${a.type === 'send_message' && ['concluída', 'em andamento'].includes(a.status) && (a.content.items || []).some((i) => i.kind === 'text') ? `<button class="btn" type="button" data-act="msg-edit-open" data-id="${a.id}">Editar mensagem</button>` : ''}
       ${a.status === 'agendada' ? `<button class="btn" type="button" data-act="action-edit" data-id="${a.id}">Editar</button>` : ''}<button class="btn" type="button" data-act="action-duplicate" data-id="${a.id}">Duplicar</button>
       <button class="btn" type="button" data-act="action-cancel" data-id="${a.id}">Cancelar ação</button><button class="btn primary" type="button" data-act="modal-close">Fechar</button>`,
     onClose: () => { openActionId = null; },
@@ -1058,7 +1068,7 @@ function step1() {
 }
 function step2() {
   return `<h2>O que você quer fazer?</h2><p class="lead">Escolha o tipo de ação.</p>
-    <div class="cards">${Object.entries(ACTION_TYPES).map(([k, t]) => `<button type="button" class="select-card ${wiz.type === k ? 'on' : ''}" data-act="wiz-type" data-type="${k}"><span class="check">${wiz.type === k ? icon('check') : ''}</span><span class="t-ico">${icon(t.icon)}</span><b>${t.label}</b><small>${t.desc}</small></button>`).join('')}</div>`;
+    <div class="cards">${Object.entries(ACTION_TYPES).filter(([, t]) => !t.hidden).map(([k, t]) => `<button type="button" class="select-card ${wiz.type === k ? 'on' : ''}" data-act="wiz-type" data-type="${k}"><span class="check">${wiz.type === k ? icon('check') : ''}</span><span class="t-ico">${icon(t.icon)}</span><b>${t.label}</b><small>${t.desc}</small></button>`).join('')}</div>`;
 }
 function step3() {
   if (!state.accounts.length) return emptyState('smartphone', 'Nenhuma conta conectada', 'Conecte um número para executar a ação.', '<a class="btn primary" href="#/contas">Ir para Contas</a>');
@@ -1262,6 +1272,7 @@ const API_DOCS = [
   { path: 'groups/sync', desc: 'Conta os participantes de cada grupo (botão "Atualizar participantes" na campanha).', req: { instance: 'clush-atendimento', groupIds: ['1203...@g.us'] }, res: { groups: [{ id: '1203...@g.us', members: 412 }] } },
   { path: 'actions/run', desc: 'Recebe a ação completa (conteúdo, grupos, velocidade, agendamento). Se scheduledAt vier preenchido, o n8n agenda.', req: { action: { id: 'act_x', type: 'send_message', instance: 'clush-atendimento', groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1' }], content: { items: [{ id: 'it_x', kind: 'image', caption: 'Olá!', fileName: 'foto.jpg' }], mentionAll: false, pin: false, speed: { mode: 'normal', min: 15, max: 30 }, numbersList: [] }, scheduledAt: null }, files: { it_x: { name: 'foto.jpg', type: 'image/jpeg', base64: '...' } } }, res: { id: 'act_x', status: 'em andamento' } },
   { path: 'actions/status', desc: 'Progresso das ações abertas. O painel consulta a cada 5 segundos. Em "links" vão os novos links de convite (ação de atualizar links).', req: { ids: ['act_x'] }, res: { actions: [{ id: 'act_x', status: 'concluída', progress: { done: 4, total: 4 }, log: [{ t: 1760000000000, text: 'Bruno VIP #1: Texto enviado' }], links: { '1203...@g.us': 'https://chat.whatsapp.com/...' } }] } },
+  { path: 'groups/export', desc: 'Lista as pessoas dos grupos escolhidos (grupo, número e nome quando houver). Quem esconde o número aparece com número vazio.', req: { instance: 'clush-atendimento', groups: [{ id: '1203...@g.us', name: 'Grupo #1' }] }, res: { rows: [{ group: 'Grupo #1', number: '5547999990001', name: 'Ana' }], failed: [], hidden: 0 } },
   { path: 'messages/info', desc: 'Devolve as reações, votos de enquete e leituras das mensagens de uma ação (dados capturados pelo webhook da Evolution).', req: { id: 'act_x' }, res: { sent: [{ id: 'WAID', g: '1203...@g.us', i: 'it_x' }], data: { WAID: { reactions: [{ jid: '5547...@s.whatsapp.net', emoji: '👍', name: 'Ana' }], poll: [{ name: 'Opção A', voters: ['5547...@s.whatsapp.net'] }], readCount: 0, deliveredCount: 0 } }, stats: { received: 10 } } },
   { path: 'actions/cancel', desc: 'Cancela uma ação agendada ou em andamento e apaga os arquivos dela do servidor de arquivos. Com keepMedia: true os arquivos ficam (usado ao editar uma ação agendada).', req: { id: 'act_x', keepMedia: false }, res: { ok: true } },
 ];
@@ -1272,7 +1283,7 @@ function viewConfig() {
       <label class="field"><span>URL base dos webhooks</span><input id="cfg-url" type="text" value="${esc(s.baseUrl)}" placeholder="https://n8n.seudominio.com/webhook/viphub"></label></div>
       <label class="field"><span>Servidor de arquivos (opcional) · versão do painel ${APP_VERSION}</span><input id="cfg-media" type="text" value="${esc(s.mediaUrl || '')}" placeholder="https://midia.seudominio.com"><small>Para enviar vídeos e arquivos grandes (até 100 MB). O arquivo sobe para o seu servidor, é enviado aos grupos e apagado depois. Em branco, o limite é 12 MB.</small></label>
       <label class="field"><span>Senha de acesso</span><input id="cfg-token" type="password" autocomplete="off" value="${esc(s.token)}" placeholder="A senha que você recebeu"><small>Identifica o seu cliente no n8n e é enviada no cabeçalho Authorization. ${s.client ? 'Conectado como <b>' + esc(s.client.name) + '</b>.' : ''}</small></label>
-      <div style="display:flex;gap:8px"><button class="btn primary" type="button" data-act="cfg-save">Salvar</button><button class="btn" type="button" data-act="cfg-test">Testar conexão</button></div></div>
+      <div style="display:flex;gap:8px"><button class="btn primary" type="button" data-act="cfg-save">Salvar</button><button class="btn" type="button" data-act="cfg-test">Testar conexão</button>${s.mode === 'n8n' ? '<button class="btn" type="button" data-act="cfg-access-link">Copiar link de acesso (outro aparelho)</button>' : ''}</div></div>
     <div class="panel"><h3>Dados do painel</h3><p class="lead">${s.mode === 'n8n' ? 'No modo n8n ficam guardados no servidor, na sua conta, e aparecem em qualquer aparelho. Este navegador mantém só uma cópia.' : 'Ficam guardados neste navegador.'}</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap">${s.mode === 'n8n' ? '<button class="btn" type="button" data-act="cfg-pull">Atualizar do servidor</button>' : ''}<button class="btn" type="button" data-act="cfg-seed">Carregar dados de exemplo</button><button class="btn" type="button" data-act="cfg-export">Exportar</button>
       <label class="btn">Importar<input id="cfg-import-file" type="file" accept="application/json" hidden></label><button class="btn danger" type="button" data-act="cfg-reset">Apagar tudo</button></div></div>
@@ -1405,6 +1416,69 @@ A['import-submit'] = async (btn) => {
     toast(`${chosen.length} grupo(s) importado(s)${noLink ? `. ${noLink} sem link de convite (a conta não é admin deles)` : ''}`, noLink ? 'info' : 'success');
     syncCampaign(c).catch(() => toast('Grupos importados, mas o link inteligente não foi atualizado. Abra a campanha de novo para tentar outra vez.', 'error'));
   } catch (e) { toast(e.message, 'error'); setBusy(btn, false); }
+};
+/* exportar leads: grupo, número e nome de todas as pessoas dos grupos da campanha */
+A['leads-export'] = async (btn) => {
+  const c = getCampaign(btn.dataset.id); if (!c) return;
+  if (!c.groups.length) return toast('Esta campanha ainda não tem grupos.', 'error');
+  const byAcc = {};
+  c.groups.forEach((g) => { const acc = getAccount(g.accountId || c.accountId); if (acc) (byAcc[acc.id] = byAcc[acc.id] || { acc, groups: [] }).groups.push({ id: g.id, name: g.name }); });
+  if (!Object.keys(byAcc).length) return toast('Não achei a conta conectada que administra estes grupos.', 'error');
+  setBusy(btn, true);
+  try {
+    let rows = []; let failed = []; let hidden = 0;
+    for (const k of Object.keys(byAcc)) {
+      const r = await API.call('groups/export', { instance: byAcc[k].acc.instance, groups: byAcc[k].groups });
+      rows = rows.concat(r.rows || []); failed = failed.concat(r.failed || []); hidden += r.hidden || 0;
+    }
+    const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+    const csv = '\ufeff' + [['grupo', 'numero', 'nome']].concat(rows.map((x) => [x.group, x.number, x.name])).map((r) => r.map(q).join(';')).join('\n');
+    const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    link.download = 'leads-' + c.name.replace(/[^\w-]+/g, '-').toLowerCase() + '.csv'; link.click();
+    toast(rows.length + ' contatos exportados' + (hidden ? '. ' + hidden + ' com número oculto pelo WhatsApp (coluna vazia)' : '') + (failed.length ? '. Falhou em: ' + failed.join(', ') : ''), failed.length ? 'error' : 'success');
+    setBusy(btn, false);
+  } catch (e) { toast(e.message, 'error'); setBusy(btn, false); }
+};
+/* editar mensagem já enviada (texto, até 15 minutos depois do envio) */
+A['msg-edit-open'] = (el) => {
+  const a = getAction(el.dataset.id); if (!a) return;
+  const items = (a.content.items || []).map((it, i) => ({ it, i })).filter((x) => x.it.kind === 'text');
+  if (!items.length) return toast('Só mensagens de texto podem ser editadas.', 'error');
+  openModal({
+    title: 'Editar mensagem enviada', size: '',
+    body: `<p class="lead">O novo texto substitui o antigo nas mensagens já enviadas aos grupos. O WhatsApp só permite editar <b>texto</b>, até <b>15 minutos</b> depois do envio. Passado esse prazo, a edição falha.</p>
+      ${items.length > 1 ? `<label class="field"><span>Qual mensagem</span><select id="edit-item">${items.map((x) => `<option value="${x.i}">${esc(String(x.it.text).slice(0, 60))}</option>`).join('')}</select></label>` : `<input type="hidden" id="edit-item" value="${items[0].i}">`}
+      <label class="field"><span>Novo texto</span><textarea id="edit-text" rows="5">${esc(items[0].it.text)}</textarea></label>`,
+    footer: `<button class="btn" type="button" data-act="modal-close">Cancelar</button><button class="btn primary" type="button" data-act="msg-edit-submit" data-id="${a.id}">Editar nos grupos</button>`,
+  });
+};
+A['msg-edit-submit'] = async (btn) => {
+  const src = getAction(btn.dataset.id); if (!src) return;
+  const idx = Number($('#edit-item').value); const it = (src.content.items || [])[idx];
+  const text = $('#edit-text').value;
+  if (!it || !text.trim()) return toast('Escreva o novo texto.', 'error');
+  if (text === it.text) return toast('O texto é igual ao anterior.', 'error');
+  setBusy(btn, true);
+  try {
+    const act = Object.assign(JSON.parse(JSON.stringify(src)), {
+      id: uid('act'), type: 'edit_message', content: { sourceId: src.id, itemId: it.id, text, speed: src.content.speed },
+      status: 'em andamento', progress: { done: 0, total: src.groups.length }, groupCount: src.groups.length, scheduledAt: null, createdAt: Date.now(), log: [], media: undefined,
+    });
+    const res = await API.call('actions/run', { action: act });
+    if (res.id) act.id = res.id; if (res.status) act.status = res.status;
+    state.actions.unshift(act); saveState(); closeModal();
+    if (state.settings.mode === 'demo') startSim(act.id);
+    toast('Edição iniciada nos ' + src.groups.length + ' grupos.', 'success'); location.hash = '#/acoes'; route();
+  } catch (e) { toast(e.message, 'error'); setBusy(btn, false); }
+};
+/* acesso em outro aparelho: o link leva a URL, a senha e o servidor de arquivos para o outro navegador */
+A['cfg-access-link'] = async () => {
+  const s = state.settings;
+  if (s.mode !== 'n8n' || !s.baseUrl || !s.token) return toast('Salve a conexão com o n8n antes.', 'error');
+  const u = new URLSearchParams({ u: s.baseUrl, k: s.token }); if (s.mediaUrl) u.set('m', s.mediaUrl);
+  const link = location.origin + location.pathname + '#/entrar?' + u.toString();
+  try { await navigator.clipboard.writeText(link); toast('Link copiado. Abra no outro aparelho. Ele contém a senha, não compartilhe com outras pessoas.', 'success'); }
+  catch (e) { window.prompt('Copie este link e abra no outro aparelho:', link); }
 };
 A['groups-submit'] = async (btn) => {
   const c = getCampaign(btn.dataset.id); if (!c) return;
@@ -1688,6 +1762,15 @@ window.addEventListener('hashchange', route);
    ===================================================================== */
 function init() {
   $$('[data-icon]').forEach((el) => { el.outerHTML = icon(el.dataset.icon); });
+  if ((location.hash || '').startsWith('#/entrar?')) {
+    /* link de acesso vindo de outro aparelho: guarda a conexão e entra */
+    const q = new URLSearchParams(location.hash.slice('#/entrar?'.length));
+    if (q.get('u') && q.get('k')) {
+      state.settings.mode = 'n8n'; state.settings.baseUrl = q.get('u'); state.settings.token = q.get('k'); state.settings.mediaUrl = q.get('m') || '';
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* ok */ }
+    }
+    history.replaceState(null, '', location.pathname + '#/campanhas');
+  }
   document.documentElement.dataset.theme = state.settings.theme || 'light';
   updateModeBadge();
   route();
