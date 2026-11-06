@@ -9,7 +9,7 @@
    ===================================================================== */
 
 const GROUP_LIMIT = 800;
-const APP_VERSION = '2026-11-05 17:50';
+const APP_VERSION = '2026-11-06 11:00';
 const STORAGE_KEY = 'viphub.v1';
 
 /* ---------- helpers ---------- */
@@ -245,6 +245,16 @@ const Mock = {
   async 'state/save'() { return { ok: true }; },
   async 'campaigns/sync'() { return { ok: true, groups: [] }; },
   async 'campaigns/delete'() { return { ok: true }; },
+  async 'campaigns/clicks'({ slug }) {
+    await sleep(400);
+    const days = {}; const rows = [];
+    const day = (n) => new Date(Date.now() - 3 * 3600000 - n * 86400000).toISOString().slice(0, 10);
+    [['instagram', 'bio', 'novembro', 120], ['instagram', 'stories', 'novembro', 90], ['facebook', 'ads', 'blackfriday', 210], ['whatsapp', 'status', 'novembro', 40], ['direto', '', '', 25]].forEach(([source, medium, campaign, n]) => {
+      const dd = {}; for (let i = 0; i < 10; i++) { const k = Math.round(n / 10 + (i % 3)); dd[day(i)] = k; days[day(i)] = (days[day(i)] || 0) + k; }
+      rows.push({ source, medium, campaign, content: '', term: '', ref: '', days: dd });
+    });
+    return { total: Object.values(days).reduce((s, x) => s + x, 0), days, rows, groups: [{ name: 'Demonstração #1', days: Object.assign({}, days) }] };
+  },
   async 'actions/run'({ action }) { await sleep(600); return { id: action.id, status: action.scheduledAt ? 'agendada' : 'em andamento' }; },
   async 'actions/status'() { return { actions: [] }; },
   async 'actions/cancel'() { await sleep(300); return { ok: true }; },
@@ -640,6 +650,18 @@ function viewCampanha(id) {
         ? 'Link inteligente: leva cada pessoa para o primeiro grupo com vaga e passa para o próximo quando lota. Divulgue este link (pode encurtar no TinyURL).'
         : 'Link inteligente: leva cada pessoa para o grupo que está recebendo. Em modo demonstração ele é só um exemplo; no modo n8n ele passa a funcionar.'}</p>
       <div class="copy-line"><code>${esc(link)}</code><button class="btn sm" type="button" data-act="copy" data-copy="${esc(link)}">${icon('copy')} Copiar</button></div></div>
+    <div class="panel"><h4>Criar link rastreado</h4>
+      <p class="muted" style="margin-bottom:10px">Cada lugar onde você divulga ganha um link próprio. Assim você descobre de onde vêm as pessoas que entram. Preencha ao menos a origem.</p>
+      <div class="row"><label class="field"><span>Origem (utm_source)</span><input id="utm-source" type="text" list="utm-sources" placeholder="instagram" autocomplete="off"></label>
+        <label class="field"><span>Mídia (utm_medium)</span><input id="utm-medium" type="text" list="utm-mediums" placeholder="bio" autocomplete="off"></label>
+        <label class="field"><span>Campanha (utm_campaign)</span><input id="utm-campaign" type="text" placeholder="${esc(c.slug)}" autocomplete="off"></label></div>
+      <datalist id="utm-sources"><option value="instagram"><option value="facebook"><option value="tiktok"><option value="youtube"><option value="whatsapp"><option value="email"><option value="site"></datalist>
+      <datalist id="utm-mediums"><option value="bio"><option value="stories"><option value="feed"><option value="reels"><option value="ads"><option value="status"><option value="newsletter"></datalist>
+      <div class="copy-line"><code id="utm-out">${esc(link)}</code><button class="btn sm" type="button" data-act="copy" id="utm-copy" data-copy="${esc(link)}">${icon('copy')} Copiar</button></div></div>
+    <div class="panel"><h4>Origem dos cliques
+      <select id="clicks-range" style="margin-left:auto"><option value="7">Últimos 7 dias</option><option value="30" selected>Últimos 30 dias</option><option value="90">Últimos 90 dias</option><option value="0">Todo o período</option></select>
+      <button class="btn sm" type="button" data-act="clicks-csv" data-id="${c.id}">${icon('down')} CSV</button></h4>
+      <div id="clicks-report"><p class="muted">Carregando...</p></div></div>
     <div class="panel"><h4>Padrão dos grupos</h4>
       <dl class="summary" style="margin:0 0 14px">
         <dt>Nome base</dt><dd>${esc(cfg.base || c.name)} #número</dd>
@@ -647,10 +669,57 @@ function viewCampanha(id) {
         <dt>Limite</dt><dd>${GROUP_LIMIT} participantes</dd>
         <dt>Descrição</dt><dd>${esc(cfg.description || 'Sem descrição')}</dd></dl>
       <button class="btn danger sm" type="button" data-act="campaign-delete" data-id="${c.id}">${icon('trash')} Excluir campanha</button></div>`;
+  bindUtmBuilder(link);
+  loadClicks(c);
+  $('#clicks-range').addEventListener('change', () => renderClicks(c));
   if (state.settings.mode === 'n8n' && c.groups.length) {
     /* puxa do n8n a contagem mais recente (ele conta os participantes a cada minuto) */
     syncCampaign(c).then((changed) => { if (changed && location.hash === '#/campanhas/' + c.id) route(); }).catch(() => { /* painel segue com os números locais */ });
   }
+}
+/* link rastreado (UTM) */
+function bindUtmBuilder(base) {
+  const ids = ['source', 'medium', 'campaign'];
+  const upd = () => {
+    const slugify = (v) => String(v || '').trim().replace(/\s+/g, '-');
+    const qs = ids.map((k) => [k, slugify($('#utm-' + k).value)]).filter((x) => x[1]).map(([k, v]) => 'utm_' + k + '=' + encodeURIComponent(v));
+    const url = base + (qs.length ? '&' + qs.join('&') : '');
+    $('#utm-out').textContent = url; $('#utm-copy').dataset.copy = url;
+  };
+  ids.forEach((k) => $('#utm-' + k).addEventListener('input', upd));
+}
+/* relatório de cliques por origem */
+const clicksCache = {};
+async function loadClicks(c) {
+  try { clicksCache[c.id] = await API.call('campaigns/clicks', { slug: c.slug }); }
+  catch (e) { clicksCache[c.id] = { error: e.message }; }
+  if (location.hash === '#/campanhas/' + c.id) renderClicks(c);
+}
+function clicksAggregate(data, days) {
+  const from = days ? new Date(Date.now() - 3 * 3600000 - (days - 1) * 86400000).toISOString().slice(0, 10) : '';
+  const sum = (d) => Object.entries(d || {}).reduce((t, [k, n]) => t + (!from || k >= from ? n : 0), 0);
+  const rows = (data.rows || []).map((r) => Object.assign({}, r, { n: sum(r.days) })).filter((r) => r.n > 0);
+  const byDay = {};
+  Object.entries(data.days || {}).forEach(([k, n]) => { if (!from || k >= from) byDay[k] = n; });
+  const group = (key) => { const m = {}; rows.forEach((r) => { const k = r[key] || '(não informado)'; m[k] = (m[k] || 0) + r.n; }); return Object.entries(m).sort((a, b) => b[1] - a[1]); };
+  const groups = (data.groups || []).map((g) => [g.name, sum(g.days)]).filter((x) => x[1] > 0).sort((a, b) => b[1] - a[1]);
+  return { rows: rows.sort((a, b) => b.n - a.n), total: rows.reduce((t, r) => t + r.n, 0), byDay, source: group('source'), medium: group('medium'), campaign: group('campaign'), groups };
+}
+function renderClicks(c) {
+  const box = $('#clicks-report'); if (!box) return;
+  const data = clicksCache[c.id];
+  if (!data) { box.innerHTML = '<p class="muted">Carregando...</p>'; return; }
+  if (data.error) { box.innerHTML = `<div class="callout bad">${icon('alert')}<p>${esc(data.error)}</p></div>`; return; }
+  const ag = clicksAggregate(data, Number($('#clicks-range').value));
+  if (!ag.total) { box.innerHTML = '<p class="muted">Nenhum clique registrado neste período. Os cliques passam a ser contados a partir do momento em que o link estiver atualizado no n8n.</p>'; return; }
+  const bars = (title, list) => `<div><h5 style="margin:14px 0 6px">${title}</h5>${list.slice(0, 8).map(([k, n]) => `<div style="display:flex;gap:10px;align-items:center;margin:4px 0"><span style="flex:0 0 38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(k)}">${esc(k)}</span><div class="progress" style="flex:1;margin:0"><i style="width:${Math.max(2, (n / ag.total) * 100)}%"></i></div><span style="flex:0 0 90px;text-align:right">${fmtInt(n)} (${Math.round((n / ag.total) * 100)}%)</span></div>`).join('')}</div>`;
+  const dayKeys = Object.keys(ag.byDay).sort(); const max = Math.max(...dayKeys.map((k) => ag.byDay[k]));
+  box.innerHTML = `<div class="stats" style="margin-bottom:6px"><div><b>${fmtInt(ag.total)}</b><span>cliques</span></div><div><b>${ag.source.length}</b><span>${ag.source.length === 1 ? 'origem' : 'origens'}</span></div><div><b>${ag.campaign.filter((x) => x[0] !== '(não informado)').length}</b><span>campanhas</span></div></div>
+    <p class="muted" style="margin:0">Conta cada abertura do link, não pessoas diferentes. As prévias automáticas do WhatsApp ficam de fora.</p>
+    ${bars('Por origem (utm_source)', ag.source)}${bars('Por mídia (utm_medium)', ag.medium)}${bars('Por campanha (utm_campaign)', ag.campaign)}${ag.groups.length ? bars('Grupo que recebeu', ag.groups) : ''}
+    <h5 style="margin:14px 0 6px">Por dia</h5><div style="display:flex;align-items:flex-end;gap:3px;height:70px">${dayKeys.map((k) => `<div title="${esc(k)}: ${ag.byDay[k]}" style="flex:1;min-width:3px;background:var(--accent);border-radius:3px 3px 0 0;height:${Math.max(4, (ag.byDay[k] / max) * 100)}%"></div>`).join('')}</div>
+    <div class="list" style="margin-top:14px"><div class="list-head" style="display:grid;grid-template-columns:1.2fr 1fr 1.2fr 80px;gap:8px"><span>Origem</span><span>Mídia</span><span>Campanha</span><span>Cliques</span></div>
+      ${ag.rows.slice(0, 30).map((r) => `<div class="list-row" style="display:grid;grid-template-columns:1.2fr 1fr 1.2fr 80px;gap:8px"><span>${esc(r.source || '-')}</span><span>${esc(r.medium || '-')}</span><span>${esc(r.campaign || '-')}${r.content ? ' <small class="muted">' + esc(r.content) + '</small>' : ''}</span><b>${fmtInt(r.n)}</b></div>`).join('')}</div>`;
 }
 function openGroupsModal(campId) {
   const c = getCampaign(campId); if (!c) return;
@@ -1268,6 +1337,7 @@ const API_DOCS = [
   { path: 'accounts/delete', desc: 'Remove a instância.', req: { instance: 'clush-atendimento' }, res: { ok: true } },
   { path: 'groups/create', desc: 'Cria os grupos, aplica descrição, só admins e imagem, e devolve os links.', req: { instance: 'clush-atendimento', campaignId: 'camp_x', base: 'Bruno VIP', startAt: 1, quantity: 2, participants: ['5547999990000'], adminsOnly: true, description: '...', limit: 800, image: { name: 'logo.png', type: 'image/png', base64: '...' } }, res: { groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1', inviteLink: 'https://chat.whatsapp.com/...' }] } },
   { path: 'campaigns/sync', desc: 'Envia a campanha e seus grupos para o link inteligente. Devolve a contagem atual de participantes. Com force=true o n8n aceita as contagens enviadas.', req: { slug: 'bruno-vip-123', name: 'Bruno VIP', limit: 800, force: false, groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1', members: 412, inviteLink: 'https://chat.whatsapp.com/...', instance: 'clush-atendimento' }] }, res: { ok: true, groups: [{ id: '1203...@g.us', members: 412 }] } },
+  { path: 'campaigns/clicks', desc: 'Devolve os cliques do link inteligente por origem (utm_source, utm_medium, utm_campaign, utm_content, utm_term, site de origem) e por dia.', req: { slug: 'bruno-vip-123' }, res: { total: 2, days: { '2026-11-06': 2 }, rows: [{ source: 'instagram', medium: 'bio', campaign: 'novembro', content: '', term: '', ref: '', days: { '2026-11-06': 2 } }], groups: [{ name: 'Bruno VIP #1', days: { '2026-11-06': 2 } }] } },
   { path: 'campaigns/delete', desc: 'Remove a campanha do link inteligente.', req: { slug: 'bruno-vip-123' }, res: { ok: true } },
   { path: 'groups/sync', desc: 'Conta os participantes de cada grupo (botão "Atualizar participantes" na campanha).', req: { instance: 'clush-atendimento', groupIds: ['1203...@g.us'] }, res: { groups: [{ id: '1203...@g.us', members: 412 }] } },
   { path: 'actions/run', desc: 'Recebe a ação completa (conteúdo, grupos, velocidade, agendamento). Se scheduledAt vier preenchido, o n8n agenda.', req: { action: { id: 'act_x', type: 'send_message', instance: 'clush-atendimento', groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1' }], content: { items: [{ id: 'it_x', kind: 'image', caption: 'Olá!', fileName: 'foto.jpg' }], mentionAll: false, pin: false, speed: { mode: 'normal', min: 15, max: 30 }, numbersList: [] }, scheduledAt: null }, files: { it_x: { name: 'foto.jpg', type: 'image/jpeg', base64: '...' } } }, res: { id: 'act_x', status: 'em andamento' } },
@@ -1418,6 +1488,17 @@ A['import-submit'] = async (btn) => {
   } catch (e) { toast(e.message, 'error'); setBusy(btn, false); }
 };
 /* exportar leads: grupo, número e nome de todas as pessoas dos grupos da campanha */
+A['clicks-csv'] = (btn) => {
+  const c = getCampaign(btn.dataset.id); const data = c && clicksCache[c.id];
+  if (!data || data.error) return toast('Os cliques ainda não carregaram.', 'error');
+  const ag = clicksAggregate(data, Number($('#clicks-range').value));
+  if (!ag.rows.length) return toast('Não há cliques neste período.', 'error');
+  const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const csv = '﻿' + [['origem', 'midia', 'campanha', 'conteudo', 'termo', 'site_de_origem', 'cliques']].concat(ag.rows.map((r) => [r.source, r.medium, r.campaign, r.content, r.term, r.ref, r.n])).map((r) => r.map(q).join(';')).join('\n');
+  const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  link.download = 'cliques-' + c.slug + '.csv'; link.click();
+  toast('Cliques exportados', 'success');
+};
 A['leads-export'] = async (btn) => {
   const c = getCampaign(btn.dataset.id); if (!c) return;
   if (!c.groups.length) return toast('Esta campanha ainda não tem grupos.', 'error');
