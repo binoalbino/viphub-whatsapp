@@ -9,7 +9,7 @@
    ===================================================================== */
 
 const GROUP_LIMIT = 800;
-const APP_VERSION = '2026-11-06 11:00';
+const APP_VERSION = '2026-11-18 10:00';
 const STORAGE_KEY = 'viphub.v1';
 
 /* ---------- helpers ---------- */
@@ -105,7 +105,7 @@ const icon = (n, cls = '') => `<svg class="ico ${cls}" viewBox="0 0 24 24" fill=
 
 /* ---------- state ---------- */
 const defaultState = () => ({
-  accounts: [], campaigns: [], actions: [],
+  accounts: [], campaigns: [], actions: [], blocks: [],
   settings: { mode: 'demo', baseUrl: '', token: '', mediaUrl: '', theme: 'light', client: null },
 });
 function loadState() {
@@ -122,10 +122,11 @@ let state = loadState();
 function saveState() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* sem espaço */ }
   scheduleRemoteSave();
+  scheduleBlocksSync();
 }
 /* No modo n8n os dados ficam guardados no servidor, separados por cliente. O navegador mantém só uma cópia. */
 const remote = { ready: false, timer: null, failed: false };
-function remotePayload() { return { accounts: state.accounts, campaigns: state.campaigns, actions: state.actions }; }
+function remotePayload() { return { accounts: state.accounts, campaigns: state.campaigns, actions: state.actions, blocks: state.blocks }; }
 function scheduleRemoteSave() {
   if (state.settings.mode !== 'n8n' || !remote.ready) return;
   clearTimeout(remote.timer);
@@ -144,9 +145,9 @@ async function connectRemote({ quiet = false } = {}) {
   state.settings.client = ping.client || null;
   const r = await API.call('state/load', {});
   if (r.state && typeof r.state === 'object') {
-    state.accounts = r.state.accounts || []; state.campaigns = r.state.campaigns || []; state.actions = r.state.actions || [];
+    state.accounts = r.state.accounts || []; state.campaigns = r.state.campaigns || []; state.actions = r.state.actions || []; state.blocks = r.state.blocks || [];
   }
-  remote.ready = true; remote.failed = false;
+  remote.ready = true; remote.failed = false; blocksSig = null; scheduleBlocksSync();
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* ok */ }
   if (!r.state && (state.accounts.length || state.campaigns.length || state.actions.length)) await pushRemoteState();
   updateModeBadge();
@@ -245,6 +246,11 @@ const Mock = {
   async 'state/save'() { return { ok: true }; },
   async 'campaigns/sync'() { return { ok: true, groups: [] }; },
   async 'campaigns/delete'() { return { ok: true }; },
+  async 'blocks/sync'({ rules }) { await sleep(200); return { ok: true, rules: (rules || []).length, groups: 0 }; },
+  async 'blocks/log'() {
+    await sleep(300);
+    return { log: [{ t: Date.now() - 600000, group: 'Demonstração #1', number: '5547999990001', ruleId: 'x', result: 'removido' }, { t: Date.now() - 86400000, group: 'Demonstração #2', number: '', result: 'sem número visível (identificador oculto)' }], rules: 1, groups: 2 };
+  },
   async 'campaigns/clicks'({ slug }) {
     await sleep(400);
     const days = {}; const rows = [];
@@ -355,6 +361,7 @@ const ACTION_TYPES = {
   remove_participants: { label: 'Remover participantes', icon: 'users', desc: 'Tira números específicos dos grupos.' },
   update_links: { label: 'Atualizar links dos grupos', icon: 'link', desc: 'Gera novos links de convite e invalida os antigos.' },
   edit_message: { label: 'Editar mensagem enviada', icon: 'edit', desc: '', hidden: true },
+  delete_message: { label: 'Apagar mensagem para todos', icon: 'trash', desc: '', hidden: true },
 };
 const KINDS = {
   text: { label: 'Texto', icon: 'type' },
@@ -384,6 +391,7 @@ const routes = [
   { re: /^#\/campanhas\/([\w-]+)$/, nav: 'campanhas', title: 'Campanha', render: viewCampanha },
   { re: /^#\/acoes$/, nav: 'acoes', title: 'Ações', render: viewAcoes },
   { re: /^#\/acoes\/nova$/, nav: 'acoes', title: 'Nova ação', render: viewWizard, noRefresh: true },
+  { re: /^#\/bloqueios$/, nav: 'bloqueios', title: 'Bloqueios', render: viewBloqueios, noRefresh: true },
   { re: /^#\/config$/, nav: 'config', title: 'Configurações', render: viewConfig, noRefresh: true },
 ];
 function route() {
@@ -873,10 +881,10 @@ function resolveTargets(a) {
   }
   return out;
 }
-const unitsPer = (type, content) => (type === 'send_message' ? Math.max(1, (content.items || []).length) : 1);
+const unitsPer = (type, content) => (type === 'send_message' ? Math.max(1, (content.items || []).length) : type === 'delete_message' ? Math.max(1, (content.itemIds || []).length) : 1);
 function describeUnit(a, idx) {
   if (a.type === 'send_message') { const it = a.content.items[idx]; return it ? `${KINDS[it.kind].label} enviado` : 'mensagem enviada'; }
-  return { rename: 'nome alterado', description: 'descrição alterada', image: 'imagem alterada', settings: 'configuração alterada', add_admin: 'admins adicionados', remove_admin: 'admins removidos', remove_participants: 'participantes removidos', update_links: 'novo link gerado', edit_message: 'mensagem editada' }[a.type] || 'feito';
+  return { rename: 'nome alterado', description: 'descrição alterada', image: 'imagem alterada', settings: 'configuração alterada', add_admin: 'admins adicionados', remove_admin: 'admins removidos', remove_participants: 'participantes removidos', update_links: 'novo link gerado', edit_message: 'mensagem editada', delete_message: 'mensagem apagada' }[a.type] || 'feito';
 }
 const sims = new Map();
 function startSim(id) {
@@ -1042,6 +1050,7 @@ function openActionModal(id) {
     title: (ACTION_TYPES[a.type] || { label: 'Ação' }).label, size: 'lg', body: actionDetailHtml(a),
     footer: `<button class="btn danger sm" type="button" data-act="action-delete" data-id="${a.id}">${icon('trash')} Excluir</button>
       ${a.type === 'send_message' && ['concluída', 'em andamento'].includes(a.status) && (a.content.items || []).some((i) => i.kind === 'text') ? `<button class="btn" type="button" data-act="msg-edit-open" data-id="${a.id}">Editar mensagem</button>` : ''}
+      ${a.type === 'send_message' && ['concluída', 'em andamento', 'falhou', 'cancelada'].includes(a.status) && (a.content.items || []).length ? `<button class="btn danger" type="button" data-act="msg-del-open" data-id="${a.id}">${icon('trash')} Apagar para todos</button>` : ''}
       ${a.status === 'agendada' ? `<button class="btn" type="button" data-act="action-edit" data-id="${a.id}">Editar</button>` : ''}<button class="btn" type="button" data-act="action-duplicate" data-id="${a.id}">Duplicar</button>
       <button class="btn" type="button" data-act="action-cancel" data-id="${a.id}">Cancelar ação</button><button class="btn primary" type="button" data-act="modal-close">Fechar</button>`,
     onClose: () => { openActionId = null; },
@@ -1337,6 +1346,8 @@ const API_DOCS = [
   { path: 'accounts/delete', desc: 'Remove a instância.', req: { instance: 'clush-atendimento' }, res: { ok: true } },
   { path: 'groups/create', desc: 'Cria os grupos, aplica descrição, só admins e imagem, e devolve os links.', req: { instance: 'clush-atendimento', campaignId: 'camp_x', base: 'Bruno VIP', startAt: 1, quantity: 2, participants: ['5547999990000'], adminsOnly: true, description: '...', limit: 800, image: { name: 'logo.png', type: 'image/png', base64: '...' } }, res: { groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1', inviteLink: 'https://chat.whatsapp.com/...' }] } },
   { path: 'campaigns/sync', desc: 'Envia a campanha e seus grupos para o link inteligente. Devolve a contagem atual de participantes. Com force=true o n8n aceita as contagens enviadas.', req: { slug: 'bruno-vip-123', name: 'Bruno VIP', limit: 800, force: false, groups: [{ id: '1203...@g.us', n: 1, name: 'Bruno VIP #1', members: 412, inviteLink: 'https://chat.whatsapp.com/...', instance: 'clush-atendimento' }] }, res: { ok: true, groups: [{ id: '1203...@g.us', members: 412 }] } },
+  { path: 'blocks/sync', desc: 'Envia a lista de números bloqueados e o mapa de grupos para campanhas. O servidor remove quem entrar num grupo e estiver na lista.', req: { rules: [{ id: 'blk_1', number: '5547999990001', scope: 'all', campaignId: '' }], map: { '1203...@g.us': { c: 'camp_1', n: 'Grupo #1' } } }, res: { ok: true, rules: 1, groups: 1 } },
+  { path: 'blocks/log', desc: 'Últimas tentativas de entrada bloqueadas.', req: {}, res: { log: [{ t: 1700000000000, group: 'Grupo #1', number: '5547999990001', result: 'removido' }], rules: 1, groups: 1 } },
   { path: 'campaigns/clicks', desc: 'Devolve os cliques do link inteligente por origem (utm_source, utm_medium, utm_campaign, utm_content, utm_term, site de origem) e por dia.', req: { slug: 'bruno-vip-123' }, res: { total: 2, days: { '2026-11-06': 2 }, rows: [{ source: 'instagram', medium: 'bio', campaign: 'novembro', content: '', term: '', ref: '', days: { '2026-11-06': 2 } }], groups: [{ name: 'Bruno VIP #1', days: { '2026-11-06': 2 } }] } },
   { path: 'campaigns/delete', desc: 'Remove a campanha do link inteligente.', req: { slug: 'bruno-vip-123' }, res: { ok: true } },
   { path: 'groups/sync', desc: 'Conta os participantes de cada grupo (botão "Atualizar participantes" na campanha).', req: { instance: 'clush-atendimento', groupIds: ['1203...@g.us'] }, res: { groups: [{ id: '1203...@g.us', members: 412 }] } },
@@ -1346,6 +1357,68 @@ const API_DOCS = [
   { path: 'messages/info', desc: 'Devolve as reações, votos de enquete e leituras das mensagens de uma ação (dados capturados pelo webhook da Evolution).', req: { id: 'act_x' }, res: { sent: [{ id: 'WAID', g: '1203...@g.us', i: 'it_x' }], data: { WAID: { reactions: [{ jid: '5547...@s.whatsapp.net', emoji: '👍', name: 'Ana' }], poll: [{ name: 'Opção A', voters: ['5547...@s.whatsapp.net'] }], readCount: 0, deliveredCount: 0 } }, stats: { received: 10 } } },
   { path: 'actions/cancel', desc: 'Cancela uma ação agendada ou em andamento e apaga os arquivos dela do servidor de arquivos. Com keepMedia: true os arquivos ficam (usado ao editar uma ação agendada).', req: { id: 'act_x', keepMedia: false }, res: { ok: true } },
 ];
+/* =====================================================================
+   Bloqueio de números
+   ===================================================================== */
+let blocksSig = null; let blocksTimer = null;
+const blocksSync = { ok: null, error: '', at: 0 };
+const blockLog = { data: null, error: '' };
+const blocksMap = () => { const m = {}; state.campaigns.forEach((c) => c.groups.forEach((g) => { m[g.id] = { c: c.id, n: g.name }; })); return m; };
+function scheduleBlocksSync() {
+  if (state.settings.mode !== 'n8n' || !remote.ready) return;
+  clearTimeout(blocksTimer); blocksTimer = setTimeout(() => syncBlocks(false), 2500);
+}
+async function syncBlocks(force) {
+  if (state.settings.mode !== 'n8n' || !remote.ready) return;
+  const rules = (state.blocks || []).map((b) => ({ id: b.id, number: b.number, scope: b.scope, campaignId: b.campaignId || '' }));
+  const map = blocksMap();
+  const sig = JSON.stringify([rules, map]);
+  if (!force && (sig === blocksSig || (!rules.length && blocksSig === null))) return;
+  try { await API.call('blocks/sync', { rules, map }); blocksSig = sig; Object.assign(blocksSync, { ok: true, error: '', at: Date.now() }); }
+  catch (e) { Object.assign(blocksSync, { ok: false, error: e.message, at: Date.now() }); }
+  if (location.hash === '#/bloqueios') renderBlocksStatus();
+}
+const blockScopeLabel = (b) => (b.scope === 'campaign' ? ((getCampaign(b.campaignId) || {}).name ? 'Campanha: ' + getCampaign(b.campaignId).name : 'Campanha excluída') : 'Todos os grupos');
+function renderBlocksStatus() {
+  const el = $('#blk-status'); if (!el) return;
+  if (state.settings.mode !== 'n8n') { el.innerHTML = '<span class="muted">Modo demonstração: a lista não é aplicada em grupos reais.</span>'; return; }
+  el.innerHTML = blocksSync.ok === false ? `<div class="callout bad">${icon('alert')}<p>Não consegui enviar a lista ao servidor: ${esc(blocksSync.error)}</p></div>`
+    : blocksSync.ok ? `<span class="muted">Lista ativa no servidor desde ${fmtDate(blocksSync.at)}.</span>` : '<span class="muted">Lista será enviada ao servidor em instantes.</span>';
+}
+function renderBlockLog() {
+  const el = $('#blk-log'); if (!el) return;
+  if (blockLog.error) { el.innerHTML = `<div class="callout bad">${icon('alert')}<p>${esc(blockLog.error)}</p></div>`; return; }
+  if (!blockLog.data) { el.innerHTML = '<p class="muted">Carregando...</p>'; return; }
+  const rows = blockLog.data.log || [];
+  el.innerHTML = rows.length ? `<div class="list"><div class="list-head" style="display:grid;grid-template-columns:140px 1.2fr 1fr 1.4fr;gap:8px"><span>Quando</span><span>Grupo</span><span>Número</span><span>Resultado</span></div>
+    ${rows.slice(0, 50).map((r) => `<div class="list-row" style="display:grid;grid-template-columns:140px 1.2fr 1fr 1.4fr;gap:8px"><span>${fmtDate(r.t)}</span><span class="trunc">${esc(r.group || '')}</span><span>${r.number ? esc(fmtPhone(r.number)) : '-'}</span><span>${esc(r.result || '')}</span></div>`).join('')}</div>`
+    : '<p class="muted">Nenhuma tentativa bloqueada ainda.</p>';
+}
+async function loadBlockLog() {
+  blockLog.error = '';
+  try { blockLog.data = await API.call('blocks/log', {}); } catch (e) { blockLog.error = e.message; }
+  renderBlockLog();
+}
+function viewBloqueios() {
+  $('#page-actions').innerHTML = '';
+  const camps = state.campaigns;
+  const rules = state.blocks || [];
+  $('#view').innerHTML = `<div class="panel"><h4>Bloquear números</h4>
+      <p class="muted" style="margin-bottom:10px">Quem estiver na lista e entrar num grupo é removido na hora. O WhatsApp não impede a entrada antes, então a pessoa pode aparecer por alguns segundos.</p>
+      <div class="field"><span>Números (um por linha ou separados por vírgula)</span><textarea id="blk-numbers" rows="4" placeholder="(47) 99999-0001"></textarea></div>
+      <div class="row"><label class="field"><span>Onde bloquear</span><select id="blk-scope"><option value="all">Todos os grupos de todas as campanhas</option>${camps.map((c) => `<option value="c:${esc(c.id)}">Somente a campanha: ${esc(c.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>Observação (opcional)</span><input id="blk-note" type="text" maxlength="80" placeholder="Ex.: spam"></label></div>
+      <button class="btn primary" type="button" data-act="block-add">${icon('shield')} Bloquear</button>
+      <div id="blk-status" style="margin-top:10px"></div></div>
+    <div class="panel"><h4>Números bloqueados (${rules.length})</h4>
+      ${rules.length ? `<div class="list">${rules.map((b) => `<div class="list-row" style="display:grid;grid-template-columns:1.1fr 1.4fr 1fr auto;gap:8px;align-items:center">
+        <div class="cell-main"><b>${esc(fmtPhone(b.number))}</b><span>${esc(b.note || '')}</span></div>
+        <span>${esc(blockScopeLabel(b))}</span><span class="muted">${fmtDate(b.createdAt)}</span>
+        <div class="row-end"><button class="btn sm" type="button" data-act="block-purge" data-id="${b.id}">Remover agora dos grupos</button><button class="btn sm danger" type="button" data-act="block-del" data-id="${b.id}">Desbloquear</button></div></div>`).join('')}</div>` : '<p class="muted">Nenhum número bloqueado.</p>'}</div>
+    <div class="panel"><h4>Tentativas bloqueadas <button class="btn sm" type="button" data-act="block-log-refresh" style="margin-left:auto">${icon('refresh')} Atualizar</button></h4><div id="blk-log"></div></div>`;
+  renderBlocksStatus(); renderBlockLog(); loadBlockLog();
+  if (state.settings.mode === 'n8n' && blocksSync.ok === null) syncBlocks(true);
+}
 function viewConfig() {
   const s = state.settings;
   $('#view').innerHTML = `<div class="panel"><h3>Conexão com o backend</h3><p class="lead">Em modo demonstração nada é enviado de verdade. Em modo n8n, cada ação chama um webhook seu.</p>
@@ -1372,6 +1445,38 @@ function seedDemo() {
    Eventos
    ===================================================================== */
 const A = {};
+A['block-add'] = () => {
+  const p = parseNumbers($('#blk-numbers').value);
+  if (!p.valid.length) return toast('Informe ao menos um número válido, com DDD.', 'error');
+  const sv = $('#blk-scope').value; const scope = sv === 'all' ? 'all' : 'campaign'; const campaignId = sv === 'all' ? '' : sv.slice(2);
+  state.blocks = state.blocks || [];
+  let added = 0;
+  p.valid.forEach((n) => {
+    if (state.blocks.some((b) => b.number === n && b.scope === scope && (b.campaignId || '') === campaignId)) return;
+    state.blocks.unshift({ id: uid('blk'), number: n, scope, campaignId, note: $('#blk-note').value.trim(), createdAt: Date.now() }); added++;
+  });
+  saveState(); syncBlocks(true); viewBloqueios();
+  toast(added ? added + (added === 1 ? ' número bloqueado' : ' números bloqueados') + (p.invalid.length ? '. ' + p.invalid.length + ' inválido(s) ignorado(s).' : '') : 'Esses números já estavam bloqueados.', added ? 'success' : 'error');
+};
+A['block-del'] = (el) => {
+  state.blocks = (state.blocks || []).filter((b) => b.id !== el.dataset.id);
+  saveState(); syncBlocks(true); viewBloqueios(); toast('Número desbloqueado', 'success');
+};
+A['block-log-refresh'] = () => { blockLog.data = null; renderBlockLog(); loadBlockLog(); };
+/* tira agora o número dos grupos onde ele já está: abre a ação "Remover participantes" já preenchida */
+A['block-purge'] = (el) => {
+  const b = (state.blocks || []).find((x) => x.id === el.dataset.id); if (!b) return;
+  const campaignIds = (b.scope === 'campaign' ? [b.campaignId] : state.campaigns.map((c) => c.id)).filter((id) => { const c = getCampaign(id); return c && c.groups.length; });
+  if (!campaignIds.length) return toast('Não há grupos nessa(s) campanha(s).', 'error');
+  const w = newWiz(); w.type = 'remove_participants'; w.campaignIds = campaignIds; campaignIds.forEach((id) => { w.targets[id] = '*'; });
+  w.content.numbers = b.number;
+  const conn = state.accounts.filter((a) => a.status === 'connected');
+  w.accountId = conn.length === 1 ? conn[0].id : '';
+  w.step = w.accountId ? 6 : 3;
+  wiz = w; location.hash = '#/acoes/nova'; renderWizard();
+  toast('Ação preenchida. Revise e confirme para tirar o número dos grupos.', 'success');
+};
+
 A['modal-close'] = () => closeModal();
 A['modal-backdrop'] = () => closeModal();
 A['confirm-ok'] = () => { const r = pendingConfirm; pendingConfirm = null; if (r) r(true); closeModal(); };
@@ -1550,6 +1655,35 @@ A['msg-edit-submit'] = async (btn) => {
     state.actions.unshift(act); saveState(); closeModal();
     if (state.settings.mode === 'demo') startSim(act.id);
     toast('Edição iniciada nos ' + src.groups.length + ' grupos.', 'success'); location.hash = '#/acoes'; route();
+  } catch (e) { toast(e.message, 'error'); setBusy(btn, false); }
+};
+/* apagar mensagem já enviada, para todos nos grupos */
+A['msg-del-open'] = (el) => {
+  const a = getAction(el.dataset.id); if (!a) return;
+  const items = a.content.items || [];
+  const label = (it) => ({ text: 'Texto', button: 'Texto com botão', image: 'Imagem', video: 'Vídeo', audio: 'Áudio', file: 'Arquivo', poll: 'Enquete' }[it.kind] || it.kind) + (it.text || it.caption || it.question ? ': ' + String(it.text || it.caption || it.question).slice(0, 50) : '');
+  openModal({
+    title: 'Apagar para todos', size: '',
+    body: `<p class="lead">As mensagens marcadas serão <b>apagadas para todos</b> em ${a.groups.length === 1 ? '1 grupo' : a.groups.length + ' grupos'}. Isso não dá para desfazer. Só funciona nas mensagens que o painel guardou como enviadas.</p>
+      <div class="field"><span>Quais mensagens</span>${items.map((it, i) => `<label class="check" style="display:flex;gap:8px;margin:6px 0"><input type="checkbox" class="del-item" value="${esc(it.id)}" checked> <span>${esc(label(it))}</span></label>`).join('')}</div>`,
+    footer: `<button class="btn" type="button" data-act="modal-close">Cancelar</button><button class="btn danger" type="button" data-act="msg-del-submit" data-id="${a.id}">Apagar nos grupos</button>`,
+  });
+};
+A['msg-del-submit'] = async (btn) => {
+  const src = getAction(btn.dataset.id); if (!src) return;
+  const itemIds = $$('.del-item').filter((x) => x.checked).map((x) => x.value);
+  if (!itemIds.length) return toast('Marque ao menos uma mensagem.', 'error');
+  setBusy(btn, true);
+  try {
+    const act = Object.assign(JSON.parse(JSON.stringify(src)), {
+      id: uid('act'), type: 'delete_message', content: { sourceId: src.id, itemIds, speed: { mode: 'custom', min: 3, max: 6 } },
+      status: 'em andamento', progress: { done: 0, total: src.groups.length * itemIds.length }, groupCount: src.groups.length, scheduledAt: null, createdAt: Date.now(), log: [], media: undefined,
+    });
+    const res = await API.call('actions/run', { action: act });
+    if (res.id) act.id = res.id; if (res.status) act.status = res.status;
+    state.actions.unshift(act); saveState(); closeModal();
+    if (state.settings.mode === 'demo') startSim(act.id);
+    toast('Apagando nos ' + src.groups.length + ' grupos.', 'success'); location.hash = '#/acoes'; route();
   } catch (e) { toast(e.message, 'error'); setBusy(btn, false); }
 };
 /* acesso em outro aparelho: o link leva a URL, a senha e o servidor de arquivos para o outro navegador */
